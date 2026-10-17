@@ -8,6 +8,6 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "dev": "TICK_SECONDS=5 node --disable-warning=ExperimentalWarning server.js",
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+    "test": "node --disable-warning=ExperimentalWarning --test --test-force-exit test/*.test.js"
   }
 }

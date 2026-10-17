@@ -5,6 +5,8 @@ import { openDb } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import { runTick, allocateMarket } from '../src/game.js';
 
+const calm = () => 0.5; // los bez wydarzeń i zmian cen paliwa
+
 async function startServer() {
   const db = openDb(':memory:');
   const server = createServer(createApp({ db }));
@@ -67,18 +69,22 @@ test('pełna rozgrywka dwóch graczy z konkurencją', async () => {
 
   const fa = (await a('GET', '/api/airline')).data.fleet[0];
   const fb = (await b('GET', '/api/airline')).data.fleet[0];
+  // Nowy samolot trzeba poczekać, aż zostanie dostarczony.
+  assert.equal((await a('POST', `/api/aircraft/${fa.id}/assign`, { routeId: ra.data.id })).status, 400);
+  for (let i = 0; i < 5; i++) runTick(db, calm);
   assert.equal((await a('POST', `/api/aircraft/${fa.id}/assign`, { routeId: ra.data.id, roundTrips: 99 })).status, 400);
   assert.equal((await a('POST', `/api/aircraft/${fa.id}/assign`, { routeId: ra.data.id })).status, 200);
   assert.equal((await b('POST', `/api/aircraft/${fb.id}/assign`, { routeId: rb.data.id })).status, 200);
   // Nie można sterować cudzym samolotem.
   assert.equal((await b('POST', `/api/aircraft/${fa.id}/assign`, { routeId: rb.data.id })).status, 404);
 
-  for (let i = 0; i < 5; i++) runTick(db);
+  for (let i = 0; i < 5; i++) runTick(db, calm);
 
   const A = (await a('GET', '/api/airline')).data;
   const B = (await b('GET', '/api/airline')).data;
-  assert.equal(A.day, 5);
-  assert.equal(A.stats.length, 5);
+  assert.equal(A.day, 10);
+  assert.equal(A.stats.length, 10);
+  assert.ok(A.fleet[0].condition < 100, 'latający samolot się zużywa');
   assert.ok(A.routes[0].last_pax > 0);
   // Tańsza linia (Anna, cena referencyjna) przyciąga więcej pasażerów niż droższa.
   assert.ok(A.routes[0].last_pax > B.routes[0].last_pax, `${A.routes[0].last_pax} vs ${B.routes[0].last_pax}`);
@@ -109,4 +115,74 @@ test('podział rynku nie przekracza popytu ani liczby miejsc', () => {
   assert.ok(pax[0] <= 500 && pax[1] <= 200);
   assert.ok(pax[0] + pax[1] <= 600 * 1.6 + 1e-9);
   assert.equal(pax[1], 200); // tańsza i lepsza oferta wypełnia się całkowicie
+});
+
+test('klasy, przeglądy, rynek wtórny i sojusze', async () => {
+  const { db, server, base } = await startServer();
+  const a = client(base), b = client(base);
+  await a('POST', '/api/register', { username: 'ola', password: 'haslo1234' });
+  await b('POST', '/api/register', { username: 'piotr', password: 'haslo1234' });
+  await a('POST', '/api/airline', { name: 'Ola Air', code: 'OA', hub: 'WAW' });
+  await b('POST', '/api/airline', { name: 'Piotr Jet', code: 'PJ', hub: 'CDG' });
+  assert.equal((await a('POST', '/api/aircraft', { typeId: 'B788', mode: 'lease' })).status, 200);
+  await b('POST', '/api/aircraft', { typeId: 'A320', mode: 'buy' });
+  for (let i = 0; i < 8; i++) runTick(db, calm);
+
+  // Klasy podróży: konfiguracja foteli i ceny w trzech klasach.
+  const ac = (await a('GET', '/api/airline')).data.fleet[0];
+  assert.equal((await a('POST', `/api/aircraft/${ac.id}/config`, { j: 200, f: 0 })).status, 400);
+  const cfg = await a('POST', `/api/aircraft/${ac.id}/config`, { j: 30, f: 8 });
+  assert.deepEqual(cfg.data.seatMap, { y: 248 - 60 - 24, j: 30, f: 8 });
+  const r = await a('POST', '/api/routes', { origin: 'WAW', dest: 'JFK' });
+  assert.equal((await a('POST', `/api/aircraft/${ac.id}/assign`, { routeId: r.data.id })).status, 200);
+  runTick(db, calm);
+  const route = (await a('GET', '/api/airline')).data.routes[0];
+  assert.ok(route.detail.j.pax > 0 && route.detail.f.pax > 0 && route.detail.y.pax > 0);
+  assert.equal((await a('PATCH', `/api/routes/${route.id}`, { price_j: 2500 })).status, 200);
+  assert.equal((await a('GET', '/api/airline')).data.routes[0].prices.j, 2500);
+
+  // Przegląd przywraca pełną sprawność i uziemia samolot na 2 dni.
+  for (let i = 0; i < 10; i++) runTick(db, calm);
+  assert.equal((await a('POST', `/api/aircraft/${ac.id}/maintenance`)).status, 200);
+  const after = (await a('GET', '/api/airline')).data.fleet[0];
+  assert.equal(after.condition, 100);
+  assert.equal((await a('POST', `/api/aircraft/${ac.id}/maintenance`)).status, 400);
+
+  // Rynek wtórny: oferty brokera i sprzedaż między graczami.
+  const used = (await a('GET', '/api/used')).data;
+  assert.ok(used.length >= 10);
+  const cheap = used.filter((u) => !u.sellerId).sort((x, y) => x.price - y.price)[0];
+  assert.equal((await a('POST', `/api/used/${cheap.id}/buy`)).status, 200);
+  assert.equal((await a('GET', '/api/airline')).data.fleet.length, 2);
+  const pj = (await b('GET', '/api/airline')).data;
+  assert.equal((await b('POST', `/api/aircraft/${pj.fleet[0].id}/list`, { price: 50e6 })).status, 200);
+  const offer = (await a('GET', '/api/used')).data.find((u) => u.sellerId);
+  const sellerCash = pj.airline.cash;
+  assert.equal((await b('POST', `/api/used/${offer.id}/buy`)).status, 400); // własnego nie kupisz
+  assert.equal((await a('POST', `/api/used/${offer.id}/buy`)).status, 200);
+  assert.equal((await b('GET', '/api/airline')).data.airline.cash, sellerCash + 50e6);
+  assert.equal((await a('GET', '/api/airline')).data.fleet.length, 3);
+
+  // Sojusze i czat.
+  assert.equal((await a('POST', '/api/alliances', { name: 'Star Polska' })).status, 200);
+  const list = (await b('GET', '/api/alliances')).data;
+  assert.equal((await b('POST', `/api/alliances/${list[0].id}/join`)).status, 200);
+  assert.equal((await b('POST', '/api/alliance/chat', { text: 'Cześć!' })).status, 200);
+  const chat = (await a('GET', '/api/alliance/chat')).data;
+  assert.equal(chat[0].text, 'Cześć!');
+  assert.equal((await a('GET', '/api/airline')).data.alliance.members.length, 2);
+  assert.equal((await b('POST', '/api/alliance/kick', { airlineId: 1 })).status, 403);
+  assert.equal((await a('POST', '/api/alliance/leave')).status, 200);
+  assert.equal((await b('GET', '/api/airline')).data.alliance.leader_id, (await b('GET', '/api/airline')).data.airline.id);
+  server.closeAllConnections(); server.close();
+});
+
+test('wydarzenia losowe i cena paliwa', () => {
+  const db = openDb(':memory:');
+  let seed = 1;
+  const rng = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < 300; i++) runTick(db, rng);
+  const fuel = db.prepare('SELECT fuel FROM game_state').get().fuel;
+  assert.ok(fuel >= 0.5 && fuel <= 2);
+  assert.ok(db.prepare('SELECT COUNT(*) AS n FROM news').get().n > 5, 'powinny pojawić się wydarzenia');
 });

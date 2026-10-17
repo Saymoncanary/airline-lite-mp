@@ -11,7 +11,29 @@ export const RULES = {
   operatingHours: 20, // ile godzin na dobę samolot może latać
   turnaroundHours: 1, // obsługa naziemna po każdym locie
   baseCostPerSize: 2e6, // koszt nowej bazy = wielkość lotniska * ta kwota
+  // Klasy podróży: ile miejsc ekonomicznych zajmuje jeden fotel danej klasy.
+  classSpace: { y: 1, j: 2, f: 3 },
+  fuelShare: 0.6, // jaka część kosztu za km to paliwo (zależy od ceny paliwa)
+  deliveryDays: { turbo: 3, regional: 4, narrow: 5, wide: 8 },
+  maintenanceDays: 2,
+  usedMarketSize: 12, // ile ofert używanych samolotów wystawia broker
+  allianceMaxMembers: 8,
+  codeshareBonus: 1.15, // atrakcyjność trasy, gdy partner z sojuszu ma bazę na jej końcu
 };
+
+export const CLASSES = ['y', 'j', 'f'];
+export const CLASS_NAMES = { y: 'ekonomiczna', j: 'biznes', f: 'pierwsza' };
+
+// Popyt i ceny zależą od miesiąca: wakacje i święta to szczyt, zima to dołek.
+const SEASON = [0.85, 0.85, 0.95, 1, 1.05, 1.15, 1.25, 1.25, 1.05, 1, 0.95, 1.1];
+export const MONTHS = ['styczeń', 'luty', 'marzec', 'kwiecień', 'maj', 'czerwiec', 'lipiec', 'sierpień', 'wrzesień', 'październik', 'listopad', 'grudzień'];
+
+export function gameMonth(day) {
+  return new Date(Date.UTC(2027, 0, 1) + day * 864e5).getUTCMonth();
+}
+export function seasonMult(day) {
+  return SEASON[gameMonth(day)];
+}
 
 export function distanceKm(a, b) {
   const A = AIRPORTS[a], B = AIRPORTS[b];
@@ -21,16 +43,30 @@ export function distanceKm(a, b) {
   return Math.round(2 * 6371 * Math.asin(Math.sqrt(h)));
 }
 
-// Cena referencyjna biletu w jedną stronę: przy niej popyt jest "normalny".
+// Cena referencyjna biletu ekonomicznego w jedną stronę: przy niej popyt jest "normalny".
 export function baseFare(dist) {
   return Math.round(40 + 0.1 * dist ** 0.97);
 }
 
-// Dzienny popyt pasażerów w jedną stronę przy cenie referencyjnej.
+// Cena referencyjna w danej klasie. Na długich trasach klasy premium są relatywnie droższe.
+export function classFare(cls, dist) {
+  const long = dist >= 2000;
+  const mult = { y: 1, j: long ? 3 : 2.5, f: long ? 6 : 4 }[cls];
+  return Math.round(baseFare(dist) * mult);
+}
+
+// Dzienny popyt pasażerów w jedną stronę przy cenie referencyjnej (wszystkie klasy razem).
 export function dailyDemand(a, b) {
   const d = distanceKm(a, b);
   const f = d < 200 ? 0.3 : d < 500 ? 0.7 : d < 3000 ? 1 : d < 8000 ? 0.8 : 0.6;
   return Math.round(12 * AIRPORTS[a].size * AIRPORTS[b].size * f);
+}
+
+// Jaka część pasażerów chce lecieć daną klasą.
+export function classShare(cls, dist) {
+  const f = dist < 2000 ? 0.01 : 0.04;
+  const j = dist < 2000 ? 0.08 : 0.15;
+  return { y: 1 - f - j, j, f }[cls];
 }
 
 // Ile rotacji (lot tam i z powrotem) dziennie zrobi samolot na danej trasie.
@@ -42,16 +78,40 @@ export function maxRoundTrips(type, dist) {
 }
 
 // Koszt jednego lotu (w jedną stronę): paliwo/obsługa + opłaty lotniskowe.
-export function legCost(type, dist) {
-  return type.costPerKm * dist + 500 + type.seats * 8;
+// fuel to indeks ceny paliwa (1 = normalna cena).
+export function legCost(type, dist, fuel = 1) {
+  return type.costPerKm * dist * (1 - RULES.fuelShare + RULES.fuelShare * fuel) + 500 + type.seats * 8;
 }
 
 export function leaseDaily(type) {
   return type.price * RULES.leaseDailyPct;
 }
 
-export function aircraftValue(type, ageDays) {
-  return Math.round(type.price * Math.max(0.3, 0.9 - (ageDays / 365) * 0.03));
+export function aircraftValue(type, ageDays, condition = 100) {
+  return Math.round(type.price * Math.max(0.3, 0.9 - (ageDays / 365) * 0.03) * (0.7 + (0.3 * condition) / 100));
+}
+
+// Rozkład foteli w samolocie: biznes i pierwsza zajmują więcej miejsca niż ekonomiczna.
+export function seatMap(type, j = 0, f = 0) {
+  return { y: Math.max(0, type.seats - j * RULES.classSpace.j - f * RULES.classSpace.f), j, f };
+}
+export function validSeatConfig(type, j, f) {
+  return Number.isInteger(j) && Number.isInteger(f) && j >= 0 && f >= 0 && j * RULES.classSpace.j + f * RULES.classSpace.f <= type.seats;
+}
+
+// Koszt przeglądu rośnie z zużyciem samolotu.
+export function maintenanceCost(type, condition) {
+  return Math.round(type.price * 0.0004 * (100 - condition) + 20000);
+}
+
+// Dzienne zużycie: latający samolot zużywa się szybciej niż stojący w hangarze.
+export function dailyWear(roundTrips) {
+  return roundTrips > 0 ? 0.1 + 0.12 * roundTrips : 0.02;
+}
+
+export function routePrices(r) {
+  const dist = distanceKm(r.origin, r.dest);
+  return { y: r.price, j: r.price_j ?? classFare('j', dist), f: r.price_f ?? classFare('f', dist) };
 }
 
 export function pairKey(a, b) {
@@ -79,23 +139,39 @@ export function addNews(db, text) {
 }
 
 export function companyValue(db, airline, day = currentDay(db)) {
-  const owned = db.prepare('SELECT type_id, acquired_day FROM aircraft WHERE airline_id = ? AND leased = 0').all(airline.id);
-  const fleet = owned.reduce((s, a) => s + aircraftValue(AIRCRAFT_TYPES[a.type_id], day - a.acquired_day), 0);
+  const owned = db.prepare('SELECT type_id, acquired_day, condition FROM aircraft WHERE airline_id = ? AND leased = 0').all(airline.id);
+  const fleet = owned.reduce((s, a) => s + aircraftValue(AIRCRAFT_TYPES[a.type_id], Math.max(0, day - a.acquired_day), a.condition), 0);
   return airline.cash - airline.debt + fleet;
 }
 
+export function activeEvents(db, day = currentDay(db)) {
+  return db.prepare('SELECT * FROM events WHERE start_day <= ? AND end_day >= ? ORDER BY id').all(day, day);
+}
+
+// Mnożnik popytu z wydarzeń dotyczących któregoś z końców trasy.
+export function eventMult(events, a, b) {
+  let m = 1;
+  for (const e of events) {
+    const hit = e.kind === 'airport' ? e.target === a || e.target === b
+      : e.kind === 'region' ? AIRPORTS[a].region === e.target || AIRPORTS[b].region === e.target
+        : false;
+    if (hit) m *= e.mult;
+  }
+  return m;
+}
+
 // Rozdziela popyt na danej parze miast pomiędzy konkurujące linie.
-// Atrakcyjność oferty zależy od ceny (względem ceny referencyjnej) i reputacji linii.
+// Atrakcyjność oferty zależy od ceny (względem ceny referencyjnej), reputacji linii i premii sojuszu.
 export function allocateMarket(demand, base, offers) {
   const seats = offers.reduce((s, o) => s + o.seats, 0);
   if (seats <= 0) return offers.map(() => 0);
   const avgPrice = offers.reduce((s, o) => s + o.price * o.seats, 0) / seats;
   const market = demand * Math.min(1.6, Math.max(0.05, (base / avgPrice) ** 1.3));
-  const w = offers.map((o) => o.seats * (base / o.price) ** 2 * (0.5 + o.reputation / 100));
+  const w = offers.map((o) => o.seats * (base / o.price) ** 2 * (0.5 + o.reputation / 100) * (o.bonus || 1));
   const W = w.reduce((s, x) => s + x, 0);
   const pax = offers.map((o, i) => Math.min(o.seats, (market * w[i]) / W));
   // Pasażerowie, którzy nie zmieścili się u wybranej linii, próbują u pozostałych.
-  let left = market - pax.reduce((s, x) => s + x, 0);
+  const left = market - pax.reduce((s, x) => s + x, 0);
   const spare = offers.map((o, i) => (o.seats - pax[i] > 0 ? w[i] : 0));
   const S = spare.reduce((s, x) => s + x, 0);
   if (left > 0 && S > 0) {
@@ -106,52 +182,168 @@ export function allocateMarket(demand, base, offers) {
   return pax;
 }
 
-export function runTick(db) {
+// --- Wydarzenia losowe ------------------------------------------------------
+const pick = (arr, rng) => arr[Math.floor(rng() * arr.length)];
+const between = (lo, hi, rng) => Math.round(lo + rng() * (hi - lo));
+
+function randomEvent(rng, day) {
+  const airports = Object.values(AIRPORTS);
+  const big = airports.filter((a) => a.size >= 5);
+  const regions = [...new Set(airports.map((a) => a.region))];
+  const kinds = [
+    () => {
+      const a = pick(big, rng);
+      return { kind: 'airport', target: a.code, mult: 0.3, len: between(2, 5, rng), text: `Strajk kontrolerów lotów: ${a.city} (${a.code}). Popyt na loty spada.` };
+    },
+    () => {
+      const a = pick(big, rng);
+      return { kind: 'airport', target: a.code, mult: 1.6, len: between(3, 7, rng), text: `Wielkie targi i koncerty: ${a.city} (${a.code}). Chętnych do podróży jest znacznie więcej.` };
+    },
+    () => {
+      const r = pick(regions, rng);
+      return { kind: 'region', target: r, mult: 0.7, len: between(10, 25, rng), text: `Kryzys gospodarczy w regionie: ${r}. Ludzie mniej podróżują.` };
+    },
+    () => {
+      const r = pick(regions, rng);
+      return { kind: 'region', target: r, mult: 1.25, len: between(10, 25, rng), text: `Boom turystyczny w regionie: ${r}. Popyt rośnie.` };
+    },
+    () => ({ kind: 'fuel', target: null, mult: 1.35, len: 0, text: 'Napięcia na rynku ropy: cena paliwa gwałtownie rośnie.' }),
+    () => ({ kind: 'fuel', target: null, mult: 0.75, len: 0, text: 'Nadpodaż ropy: paliwo wyraźnie tanieje.' }),
+  ];
+  const e = pick(kinds, rng)();
+  return { ...e, start_day: day, end_day: day + e.len };
+}
+
+// --- Rynek wtórny brokera -----------------------------------------------------
+function refillUsedMarket(db, day, rng) {
+  db.prepare('DELETE FROM used_listings WHERE aircraft_id IS NULL AND listed_day < ?').run(day - 30);
+  const count = db.prepare('SELECT COUNT(*) AS n FROM used_listings WHERE aircraft_id IS NULL').get().n;
+  const types = Object.values(AIRCRAFT_TYPES);
+  const ins = db.prepare('INSERT INTO used_listings(type_id, age_days, condition, price, listed_day) VALUES (?, ?, ?, ?, ?)');
+  for (let i = count; i < RULES.usedMarketSize; i++) {
+    const t = pick(types, rng);
+    const age = between(365 * 2, 365 * 20, rng);
+    const condition = between(45, 95, rng);
+    const price = Math.round(aircraftValue(t, age, condition) * (0.85 + rng() * 0.25) / 1e4) * 1e4;
+    ins.run(t.id, age, condition, price, day);
+  }
+}
+
+function gaussian(rng) {
+  return Math.sqrt(-2 * Math.log(1 - rng())) * Math.cos(2 * Math.PI * rng());
+}
+
+export function runTick(db, rng = Math.random) {
   return tx(db, () => {
-    const day = currentDay(db) + 1;
+    const state = db.prepare('SELECT * FROM game_state WHERE id = 1').get();
+    const day = state.day + 1;
+
+    // Cena paliwa błądzi losowo, ale wraca w okolice normy.
+    let fuel = state.fuel + 0.05 * (1 - state.fuel) + 0.025 * gaussian(rng);
+    if (rng() < 0.08) {
+      const e = randomEvent(rng, day);
+      if (e.kind === 'fuel') fuel *= e.mult;
+      db.prepare('INSERT INTO events(kind, target, start_day, end_day, mult, text) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(e.kind, e.target, e.start_day, e.end_day, e.mult, e.text);
+      db.prepare('INSERT INTO news(day, text) VALUES (?, ?)').run(day, e.text);
+    }
+    fuel = Math.min(2, Math.max(0.5, fuel));
+    const events = activeEvents(db, day);
+    const season = seasonMult(day);
+
     const airlines = new Map(
-      db.prepare('SELECT * FROM airlines').all().map((a) => [a.id, { ...a, revenue: 0, costs: 0, pax: 0, seats: 0 }])
+      db.prepare('SELECT a.*, m.alliance_id FROM airlines a LEFT JOIN alliance_members m ON m.airline_id = a.id').all()
+        .map((a) => [a.id, { ...a, revenue: 0, costs: 0, pax: 0, seats: 0, condSum: 0, condN: 0, breakdowns: 0 }])
     );
+    const basesByAirline = new Map();
+    for (const b of db.prepare('SELECT * FROM bases').all()) {
+      if (!basesByAirline.has(b.airline_id)) basesByAirline.set(b.airline_id, new Set());
+      basesByAirline.get(b.airline_id).add(b.airport);
+    }
     const routes = new Map(
-      db.prepare('SELECT * FROM routes').all().map((r) => [r.id, { ...r, dist: distanceKm(r.origin, r.dest), seatsDir: 0, cost: 0, pax: 0, revenue: 0 }])
+      db.prepare('SELECT * FROM routes').all().map((r) => [r.id, {
+        ...r, dist: distanceKm(r.origin, r.dest), prices: routePrices(r),
+        seats: { y: 0, j: 0, f: 0 }, cost: 0, pax: { y: 0, j: 0, f: 0 }, revenue: 0,
+      }])
     );
 
+    // Automatyczne przeglądy samolotów, których stan spadł poniżej progu ustawionego przez gracza.
+    const startMaint = db.prepare('UPDATE aircraft SET condition = 100, maintenance_until = ? WHERE id = ?');
+    const updAc = db.prepare('UPDATE aircraft SET condition = ? WHERE id = ?');
     for (const ac of db.prepare('SELECT * FROM aircraft').all()) {
+      if (ac.delivery_day > day) continue; // jeszcze w fabryce
       const t = AIRCRAFT_TYPES[ac.type_id];
       const al = airlines.get(ac.airline_id);
-      al.costs += t.dailyFixed + (ac.leased ? leaseDaily(t) : 0);
-      const r = ac.route_id && routes.get(ac.route_id);
-      if (r) {
-        r.seatsDir += t.seats * ac.round_trips;
-        r.cost += 2 * ac.round_trips * legCost(t, r.dist);
+      const inMaint = ac.maintenance_until >= day;
+      if (!inMaint && al.auto_maint > 0 && ac.condition < al.auto_maint) {
+        al.costs += maintenanceCost(t, ac.condition);
+        startMaint.run(day + RULES.maintenanceDays - 1, ac.id);
+        al.condSum += 100;
+        al.condN++;
+        continue;
       }
+      al.costs += t.dailyFixed * (1 + (100 - ac.condition) / 200) + (ac.leased ? leaseDaily(t) : 0);
+      al.condSum += ac.condition;
+      al.condN++;
+      const r = ac.route_id && routes.get(ac.route_id);
+      if (inMaint || !r) {
+        if (!inMaint) updAc.run(Math.max(0, ac.condition - dailyWear(0)), ac.id);
+        continue;
+      }
+      // Mocno zużyty samolot może się zepsuć i nie polecieć.
+      if (ac.condition < 30 && rng() < (30 - ac.condition) / 60) {
+        al.breakdowns++;
+        al.costs += maintenanceCost(t, ac.condition) * 0.2;
+        continue;
+      }
+      const s = seatMap(t, ac.seats_j, ac.seats_f);
+      for (const c of CLASSES) r.seats[c] += s[c] * ac.round_trips;
+      r.cost += 2 * ac.round_trips * legCost(t, r.dist, fuel);
+      updAc.run(Math.max(0, ac.condition - dailyWear(ac.round_trips)), ac.id);
     }
 
     const markets = new Map();
     for (const r of routes.values()) {
-      if (r.seatsDir <= 0) continue;
       const k = pairKey(r.origin, r.dest);
       if (!markets.has(k)) markets.set(k, []);
       markets.get(k).push(r);
     }
     for (const list of markets.values()) {
       const { origin, dest, dist } = list[0];
-      const offers = list.map((r) => ({ seats: r.seatsDir, price: r.price, reputation: airlines.get(r.airline_id).reputation }));
-      const pax = allocateMarket(dailyDemand(origin, dest), baseFare(dist), offers);
-      list.forEach((r, i) => {
-        r.pax = Math.round(pax[i] * 2); // oba kierunki
-        r.revenue = r.pax * r.price;
-      });
+      const demand = dailyDemand(origin, dest) * season * eventMult(events, origin, dest);
+      const bonus = (r) => {
+        const al = airlines.get(r.airline_id);
+        if (!al.alliance_id) return 1;
+        for (const other of airlines.values()) {
+          if (other.id === al.id || other.alliance_id !== al.alliance_id) continue;
+          const b = basesByAirline.get(other.id);
+          if (b && (b.has(origin) || b.has(dest))) return RULES.codeshareBonus;
+        }
+        return 1;
+      };
+      for (const c of CLASSES) {
+        const flying = list.filter((r) => r.seats[c] > 0);
+        if (!flying.length) continue;
+        const offers = flying.map((r) => ({ seats: r.seats[c], price: r.prices[c], reputation: airlines.get(r.airline_id).reputation, bonus: bonus(r) }));
+        const pax = allocateMarket(demand * classShare(c, dist), classFare(c, dist), offers);
+        flying.forEach((r, i) => {
+          r.pax[c] = Math.round(pax[i] * 2); // oba kierunki
+          r.revenue += r.pax[c] * r.prices[c];
+        });
+      }
     }
 
-    const updRoute = db.prepare('UPDATE routes SET last_pax = ?, last_seats = ?, last_revenue = ?, last_cost = ? WHERE id = ?');
+    const updRoute = db.prepare('UPDATE routes SET last_pax = ?, last_seats = ?, last_revenue = ?, last_cost = ?, last_detail = ? WHERE id = ?');
     for (const r of routes.values()) {
-      updRoute.run(r.pax, Math.round(r.seatsDir * 2), r.revenue, r.cost, r.id);
+      const pax = r.pax.y + r.pax.j + r.pax.f;
+      const seats = Math.round(2 * (r.seats.y + r.seats.j + r.seats.f));
+      const detail = Object.fromEntries(CLASSES.map((c) => [c, { pax: r.pax[c], seats: Math.round(2 * r.seats[c]) }]));
+      updRoute.run(pax, seats, r.revenue, r.cost, JSON.stringify(detail), r.id);
       const al = airlines.get(r.airline_id);
       al.revenue += r.revenue;
       al.costs += r.cost;
-      al.pax += r.pax;
-      al.seats += r.seatsDir * 2;
+      al.pax += pax;
+      al.seats += seats;
     }
 
     const updAirline = db.prepare('UPDATE airlines SET cash = ?, reputation = ? WHERE id = ?');
@@ -162,14 +354,18 @@ export function runTick(db) {
       const lf = al.seats ? al.pax / al.seats : 0;
       let rep = al.reputation;
       if (al.seats > 0) rep += profit > 0 && lf > 0.6 ? 0.15 : profit < 0 ? -0.2 : 0.05;
+      if (al.condN && al.condSum / al.condN < 50) rep -= 0.15; // zaniedbana flota
+      rep -= 0.3 * al.breakdowns;
       rep = Math.min(100, Math.max(0, rep));
       updAirline.run(al.cash + profit, rep, al.id);
       insStat.run(al.id, day, al.revenue, al.costs, al.pax);
     }
 
+    refillUsedMarket(db, day, rng);
+    db.prepare('DELETE FROM events WHERE end_day < ?').run(day - 30);
     db.prepare('DELETE FROM daily_stats WHERE day < ?').run(day - 60);
     db.prepare('DELETE FROM news WHERE id NOT IN (SELECT id FROM news ORDER BY id DESC LIMIT 200)').run();
-    db.prepare('UPDATE game_state SET day = ? WHERE id = 1').run(day);
+    db.prepare('UPDATE game_state SET day = ?, fuel = ? WHERE id = 1').run(day, fuel);
     return day;
   });
 }

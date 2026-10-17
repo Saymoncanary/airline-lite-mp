@@ -75,6 +75,59 @@ export function openDb(file) {
       day INTEGER NOT NULL
     );
     INSERT OR IGNORE INTO game_state (id, day) VALUES (1, 0);
+    CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY,
+      kind TEXT NOT NULL,
+      target TEXT,
+      start_day INTEGER NOT NULL,
+      end_day INTEGER NOT NULL,
+      mult REAL NOT NULL,
+      text TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS used_listings (
+      id INTEGER PRIMARY KEY,
+      type_id TEXT NOT NULL,
+      age_days INTEGER NOT NULL DEFAULT 0,
+      condition REAL NOT NULL DEFAULT 100,
+      price REAL NOT NULL,
+      aircraft_id INTEGER UNIQUE REFERENCES aircraft(id) ON DELETE CASCADE,
+      listed_day INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS alliances (
+      id INTEGER PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL COLLATE NOCASE,
+      leader_id INTEGER NOT NULL REFERENCES airlines(id),
+      created_day INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS alliance_members (
+      airline_id INTEGER PRIMARY KEY REFERENCES airlines(id) ON DELETE CASCADE,
+      alliance_id INTEGER NOT NULL REFERENCES alliances(id) ON DELETE CASCADE,
+      joined_day INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS alliance_messages (
+      id INTEGER PRIMARY KEY,
+      alliance_id INTEGER NOT NULL REFERENCES alliances(id) ON DELETE CASCADE,
+      airline_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,
+      text TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
+
+  // Kolumny dodane w kolejnych wersjach gry: dopisujemy je do istniejących baz.
+  const addColumn = (table, column, def) => {
+    if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+    }
+  };
+  addColumn('game_state', 'fuel', 'REAL NOT NULL DEFAULT 1');
+  addColumn('airlines', 'auto_maint', 'INTEGER NOT NULL DEFAULT 50');
+  addColumn('routes', 'price_j', 'REAL');
+  addColumn('routes', 'price_f', 'REAL');
+  addColumn('routes', 'last_detail', 'TEXT');
+  addColumn('aircraft', 'seats_j', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('aircraft', 'seats_f', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('aircraft', 'condition', 'REAL NOT NULL DEFAULT 100');
+  addColumn('aircraft', 'delivery_day', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('aircraft', 'maintenance_until', 'INTEGER NOT NULL DEFAULT 0');
   return db;
 }

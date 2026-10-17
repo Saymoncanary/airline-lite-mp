@@ -8,6 +8,7 @@
   --accent: #3fa9f5;
   --good: #3ecf8e;
   --bad: #f06a6a;
+  --warn: #f2b84b;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -42,7 +43,12 @@ table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th { color: var(--muted); font-weight: 600; }
 th.group { color: var(--text); padding-top: 18px; font-size: 15px; }
-.pos { color: var(--good); } .neg { color: var(--bad); } .muted { color: var(--muted); }
+.pos { color: var(--good); } .neg { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--muted); }
+.stat .v.pos { color: var(--good); } .stat .v.neg { color: var(--bad); } .stat .v.warn { color: var(--warn); }
+td.actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.chat { height: 320px; overflow-y: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+.chat .msg { margin-bottom: 8px; }
+.chat .msg div { white-space: pre-wrap; word-break: break-word; }
 #map { height: 480px; border-radius: 8px; }
 .chart { display: flex; gap: 2px; height: 160px; border-bottom: 1px dashed transparent; background: linear-gradient(var(--line), var(--line)) 0 50% / 100% 1px no-repeat; }
 .chart div { flex: 1; min-width: 3px; max-width: 28px; position: relative; }

@@ -4,7 +4,8 @@ import { join, normalize, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AIRPORTS, AIRCRAFT_TYPES } from './data.js';
 import {
-  RULES, distanceKm, baseFare, dailyDemand, maxRoundTrips, leaseDaily, aircraftValue,
+  RULES, CLASSES, MONTHS, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, leaseDaily, aircraftValue,
+  seatMap, validSeatConfig, maintenanceCost, routePrices, seasonMult, gameMonth, activeEvents,
   pairKey, tx, currentDay, addNews, companyValue,
 } from './game.js';
 import {
@@ -119,43 +120,84 @@ export function createApp({ db, secureCookies = false }) {
     return { ok: true };
   });
 
+  function myAlliance(airlineId) {
+    const m = db.prepare('SELECT alliance_id FROM alliance_members WHERE airline_id = ?').get(airlineId);
+    if (!m) return null;
+    const al = db.prepare('SELECT * FROM alliances WHERE id = ?').get(m.alliance_id);
+    const members = db.prepare(
+      `SELECT a.id, a.name, a.code, a.hub, m.joined_day FROM alliance_members m JOIN airlines a ON a.id = m.airline_id
+       WHERE m.alliance_id = ? ORDER BY m.joined_day, a.id`
+    ).all(al.id).map((a) => ({ ...a, bases: db.prepare('SELECT airport FROM bases WHERE airline_id = ?').all(a.id).map((b) => b.airport) }));
+    return { ...al, members };
+  }
+
   on('GET', '/api/airline', (ctx) => {
     const airline = requireAirline(ctx);
     const day = currentDay(db);
     const bases = db.prepare('SELECT airport FROM bases WHERE airline_id = ?').all(airline.id).map((b) => b.airport);
-    const fleet = db.prepare('SELECT * FROM aircraft WHERE airline_id = ? ORDER BY id').all(airline.id).map((a) => {
+    const fleet = db.prepare(
+      'SELECT a.*, l.id AS listing_id, l.price AS listing_price FROM aircraft a LEFT JOIN used_listings l ON l.aircraft_id = a.id WHERE a.airline_id = ? ORDER BY a.id'
+    ).all(airline.id).map((a) => {
       const t = AIRCRAFT_TYPES[a.type_id];
-      return { ...a, value: a.leased ? 0 : aircraftValue(t, day - a.acquired_day), leaseDaily: a.leased ? leaseDaily(t) : 0 };
+      return {
+        ...a, value: a.leased ? 0 : aircraftValue(t, Math.max(0, day - a.acquired_day), a.condition),
+        leaseDaily: a.leased ? leaseDaily(t) : 0, seatMap: seatMap(t, a.seats_j, a.seats_f), maintenanceCost: maintenanceCost(t, a.condition),
+      };
     });
-    const routes = db.prepare('SELECT * FROM routes WHERE airline_id = ? ORDER BY id').all(airline.id).map((r) => ({
-      ...r, distance: distanceKm(r.origin, r.dest), baseFare: baseFare(distanceKm(r.origin, r.dest)),
-    }));
+    const routes = db.prepare('SELECT * FROM routes WHERE airline_id = ? ORDER BY id').all(airline.id).map((r) => {
+      const dist = distanceKm(r.origin, r.dest);
+      return {
+        ...r, distance: dist, prices: routePrices(r), detail: r.last_detail ? JSON.parse(r.last_detail) : null,
+        refFares: Object.fromEntries(CLASSES.map((c) => [c, classFare(c, dist)])),
+      };
+    });
     const stats = db.prepare('SELECT day, revenue, costs, pax FROM daily_stats WHERE airline_id = ? ORDER BY day DESC LIMIT 30').all(airline.id).reverse();
-    return { day, airline: { ...airline, value: companyValue(db, airline, day) }, bases, fleet, routes, stats };
+    const world = {
+      fuel: db.prepare('SELECT fuel FROM game_state WHERE id = 1').get().fuel,
+      season: seasonMult(day), month: MONTHS[gameMonth(day)],
+      events: activeEvents(db, day).filter((e) => e.kind !== 'fuel').map((e) => ({ text: e.text, endDay: e.end_day })),
+    };
+    return { day, airline: { ...airline, value: companyValue(db, airline, day) }, bases, fleet, routes, stats, world, alliance: myAlliance(airline.id) };
+  });
+
+  on('POST', '/api/airline/settings', async (ctx) => {
+    const { autoMaint } = await readJson(ctx.req);
+    const v = Math.round(Number(autoMaint));
+    if (!(v >= 0 && v <= 95)) fail(400, 'Próg przeglądu: 0-95% (0 = wyłączone)');
+    db.prepare('UPDATE airlines SET auto_maint = ? WHERE id = ?').run(v, requireAirline(ctx).id);
+    return { ok: true };
   });
 
   // --- Flota ---------------------------------------------------------------
+  function myAircraft(ctx, airline) {
+    return db.prepare('SELECT * FROM aircraft WHERE id = ? AND airline_id = ?').get(Number(ctx.params.id), airline.id) || fail(404, 'Nie znaleziono samolotu');
+  }
+
+  // Nowe samoloty się zamawia: przylatują po kilku dniach gry, zależnie od wielkości.
   on('POST', '/api/aircraft', async (ctx) => {
     const { typeId, mode } = await readJson(ctx.req);
     const t = AIRCRAFT_TYPES[typeId] || fail(400, 'Nieznany typ samolotu');
     if (!['buy', 'lease'].includes(mode)) fail(400, 'Tryb: buy lub lease');
+    const day = currentDay(db);
+    const delivery = day + RULES.deliveryDays[t.cat];
     tx(db, () => {
       const airline = requireAirline(ctx);
       spend(airline, mode === 'buy' ? t.price : t.price * RULES.leaseDepositPct);
-      db.prepare('INSERT INTO aircraft(airline_id, type_id, leased, acquired_day) VALUES (?, ?, ?, ?)')
-        .run(airline.id, t.id, mode === 'lease' ? 1 : 0, currentDay(db));
+      db.prepare('INSERT INTO aircraft(airline_id, type_id, leased, acquired_day, delivery_day) VALUES (?, ?, ?, ?, ?)')
+        .run(airline.id, t.id, mode === 'lease' ? 1 : 0, delivery, delivery);
     });
-    return { ok: true };
+    return { ok: true, deliveryDays: delivery - day };
   });
 
   on('POST', '/api/aircraft/:id/assign', async (ctx) => {
     const { routeId, roundTrips } = await readJson(ctx.req);
     const airline = requireAirline(ctx);
-    const ac = db.prepare('SELECT * FROM aircraft WHERE id = ? AND airline_id = ?').get(Number(ctx.params.id), airline.id) || fail(404, 'Nie znaleziono samolotu');
+    const ac = myAircraft(ctx, airline);
     if (routeId == null) {
       db.prepare('UPDATE aircraft SET route_id = NULL, round_trips = 0 WHERE id = ?').run(ac.id);
       return { ok: true };
     }
+    if (ac.delivery_day > currentDay(db)) fail(400, 'Ten samolot nie został jeszcze dostarczony');
     const r = db.prepare('SELECT * FROM routes WHERE id = ? AND airline_id = ?').get(Number(routeId), airline.id) || fail(404, 'Nie znaleziono trasy');
     const t = AIRCRAFT_TYPES[ac.type_id];
     const dist = distanceKm(r.origin, r.dest);
@@ -167,15 +209,95 @@ export function createApp({ db, secureCookies = false }) {
     return { ok: true };
   });
 
+  on('POST', '/api/aircraft/:id/config', async (ctx) => {
+    const body = await readJson(ctx.req);
+    const airline = requireAirline(ctx);
+    const ac = myAircraft(ctx, airline);
+    const t = AIRCRAFT_TYPES[ac.type_id];
+    const j = Number(body.j), f = Number(body.f);
+    if (!validSeatConfig(t, j, f)) fail(400, `Za dużo foteli premium: biznes zajmuje ${RULES.classSpace.j}, a pierwsza ${RULES.classSpace.f} miejsca ekonomiczne (razem max ${t.seats})`);
+    db.prepare('UPDATE aircraft SET seats_j = ?, seats_f = ? WHERE id = ?').run(j, f, ac.id);
+    return { ok: true, seatMap: seatMap(t, j, f) };
+  });
+
+  on('POST', '/api/aircraft/:id/maintenance', async (ctx) => {
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      const ac = myAircraft(ctx, airline);
+      const day = currentDay(db);
+      if (ac.delivery_day > day) fail(400, 'Ten samolot nie został jeszcze dostarczony');
+      if (ac.maintenance_until > day) fail(400, 'Samolot jest już na przeglądzie');
+      if (ac.condition >= 99) fail(400, 'Samolot jest w idealnym stanie');
+      spend(airline, maintenanceCost(AIRCRAFT_TYPES[ac.type_id], ac.condition));
+      db.prepare('UPDATE aircraft SET condition = 100, maintenance_until = ? WHERE id = ?').run(day + RULES.maintenanceDays, ac.id);
+    });
+    return { ok: true };
+  });
+
   on('POST', '/api/aircraft/:id/sell', async (ctx) => {
     tx(db, () => {
       const airline = requireAirline(ctx);
-      const ac = db.prepare('SELECT * FROM aircraft WHERE id = ? AND airline_id = ?').get(Number(ctx.params.id), airline.id) || fail(404, 'Nie znaleziono samolotu');
+      const ac = myAircraft(ctx, airline);
       const t = AIRCRAFT_TYPES[ac.type_id];
       if (ac.leased) spend(airline, leaseDaily(t) * RULES.earlyReturnLeaseDays);
-      else db.prepare('UPDATE airlines SET cash = cash + ? WHERE id = ?').run(aircraftValue(t, currentDay(db) - ac.acquired_day), airline.id);
+      else db.prepare('UPDATE airlines SET cash = cash + ? WHERE id = ?').run(aircraftValue(t, Math.max(0, currentDay(db) - ac.acquired_day), ac.condition), airline.id);
       db.prepare('DELETE FROM aircraft WHERE id = ?').run(ac.id);
     });
+    return { ok: true };
+  });
+
+  // --- Rynek wtórny --------------------------------------------------------
+  on('GET', '/api/used', () => {
+    const day = currentDay(db);
+    return db.prepare(
+      `SELECT l.*, a.airline_id AS seller_id, al.name AS seller, a.acquired_day, a.condition AS ac_condition, a.type_id AS ac_type
+       FROM used_listings l LEFT JOIN aircraft a ON a.id = l.aircraft_id LEFT JOIN airlines al ON al.id = a.airline_id
+       ORDER BY l.price`
+    ).all().map((l) => ({
+      id: l.id, typeId: l.ac_type || l.type_id, price: l.price, seller: l.seller || 'Broker AeroTrade', sellerId: l.seller_id || null,
+      ageDays: l.aircraft_id ? Math.max(0, day - l.acquired_day) : l.age_days,
+      condition: l.aircraft_id ? l.ac_condition : l.condition,
+    }));
+  });
+
+  on('POST', '/api/used/:id/buy', async (ctx) => {
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      const day = currentDay(db);
+      const l = db.prepare('SELECT * FROM used_listings WHERE id = ?').get(Number(ctx.params.id)) || fail(404, 'Ta oferta jest już nieaktualna');
+      if (l.aircraft_id) {
+        const ac = db.prepare('SELECT * FROM aircraft WHERE id = ?').get(l.aircraft_id);
+        if (ac.airline_id === airline.id) fail(400, 'To Twój samolot');
+        spend(airline, l.price);
+        db.prepare('UPDATE airlines SET cash = cash + ? WHERE id = ?').run(l.price, ac.airline_id);
+        db.prepare('UPDATE aircraft SET airline_id = ?, route_id = NULL, round_trips = 0 WHERE id = ?').run(airline.id, ac.id);
+        const seller = db.prepare('SELECT name FROM airlines WHERE id = ?').get(ac.airline_id);
+        addNews(db, `${airline.name} kupuje używany ${AIRCRAFT_TYPES[ac.type_id].name} od ${seller.name}.`);
+      } else {
+        spend(airline, l.price);
+        db.prepare('INSERT INTO aircraft(airline_id, type_id, leased, acquired_day, condition) VALUES (?, ?, 0, ?, ?)')
+          .run(airline.id, l.type_id, day - l.age_days, l.condition);
+      }
+      db.prepare('DELETE FROM used_listings WHERE id = ?').run(l.id);
+    });
+    return { ok: true };
+  });
+
+  on('POST', '/api/aircraft/:id/list', async (ctx) => {
+    const price = Math.round(Number((await readJson(ctx.req)).price));
+    if (!(price >= 1e5 && price <= 2e9)) fail(400, 'Cena: od $0,1 mln do $2000 mln');
+    const airline = requireAirline(ctx);
+    const ac = myAircraft(ctx, airline);
+    if (ac.leased) fail(400, 'Samolotu w leasingu nie możesz sprzedać innym');
+    if (ac.delivery_day > currentDay(db)) fail(400, 'Ten samolot nie został jeszcze dostarczony');
+    db.prepare('INSERT INTO used_listings(type_id, price, aircraft_id, listed_day) VALUES (?, ?, ?, ?) ON CONFLICT(aircraft_id) DO UPDATE SET price = excluded.price')
+      .run(ac.type_id, price, ac.id, currentDay(db));
+    return { ok: true };
+  });
+
+  on('POST', '/api/aircraft/:id/unlist', async (ctx) => {
+    const ac = myAircraft(ctx, requireAirline(ctx));
+    db.prepare('DELETE FROM used_listings WHERE aircraft_id = ?').run(ac.id);
     return { ok: true };
   });
 
@@ -186,11 +308,22 @@ export function createApp({ db, secureCookies = false }) {
     if (a === b) fail(400, 'Wybierz dwa różne lotniska');
     const dist = distanceKm(a, b);
     const competitors = db.prepare(
-      `SELECT al.name, al.code, r.price, r.last_seats AS seats, r.last_pax AS pax FROM routes r JOIN airlines al ON al.id = r.airline_id
+      `SELECT al.name, al.code, r.price, r.price_j, r.price_f, r.origin, r.dest, r.last_seats AS seats, r.last_pax AS pax FROM routes r JOIN airlines al ON al.id = r.airline_id
        WHERE (r.origin = ? AND r.dest = ?) OR (r.origin = ? AND r.dest = ?)`
-    ).all(a, b, b, a);
-    return { distance: dist, baseFare: baseFare(dist), dailyDemand: dailyDemand(a, b), competitors };
+    ).all(a, b, b, a).map((c) => ({ name: c.name, code: c.code, seats: c.seats, pax: c.pax, prices: routePrices(c) }));
+    const demand = dailyDemand(a, b);
+    return {
+      distance: dist, baseFare: baseFare(dist), dailyDemand: demand, competitors,
+      classes: Object.fromEntries(CLASSES.map((c) => [c, { fare: classFare(c, dist), demand: Math.round(demand * classShare(c, dist)) }])),
+    };
   });
+
+  const parsePrice = (v, fallback) => {
+    if (v === undefined || v === null || v === '') return fallback;
+    const p = Math.round(Number(v));
+    if (!(p >= 10 && p <= 50000)) fail(400, 'Cena biletu: 10-50000 USD');
+    return p;
+  };
 
   on('POST', '/api/routes', async (ctx) => {
     const body = await readJson(ctx.req);
@@ -201,21 +334,20 @@ export function createApp({ db, secureCookies = false }) {
     if (!db.prepare('SELECT 1 FROM bases WHERE airline_id = ? AND airport = ?').get(airline.id, origin)) fail(400, 'Trasa musi startować z Twojej bazy');
     const exists = db.prepare('SELECT origin, dest FROM routes WHERE airline_id = ?').all(airline.id).some((r) => pairKey(r.origin, r.dest) === pairKey(origin, dest));
     if (exists) fail(409, 'Już latasz na tej trasie');
-    const price = Math.round(Number(body.price) || baseFare(distanceKm(origin, dest)));
-    if (!(price >= 10 && price <= 20000)) fail(400, 'Cena biletu: 10-20000 USD');
-    const { lastInsertRowid } = db.prepare('INSERT INTO routes(airline_id, origin, dest, price, created_day) VALUES (?, ?, ?, ?, ?)')
-      .run(airline.id, origin, dest, price, currentDay(db));
+    const dist = distanceKm(origin, dest);
+    const { lastInsertRowid } = db.prepare('INSERT INTO routes(airline_id, origin, dest, price, price_j, price_f, created_day) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(airline.id, origin, dest, parsePrice(body.price, classFare('y', dist)), parsePrice(body.price_j, classFare('j', dist)), parsePrice(body.price_f, classFare('f', dist)), currentDay(db));
     addNews(db, `${airline.name} otwiera trasę ${AIRPORTS[origin].city} – ${AIRPORTS[dest].city}.`);
     return { ok: true, id: Number(lastInsertRowid) };
   });
 
   on('PATCH', '/api/routes/:id', async (ctx) => {
-    const { price } = await readJson(ctx.req);
+    const body = await readJson(ctx.req);
     const airline = requireAirline(ctx);
-    const p = Math.round(Number(price));
-    if (!(p >= 10 && p <= 20000)) fail(400, 'Cena biletu: 10-20000 USD');
-    const r = db.prepare('UPDATE routes SET price = ? WHERE id = ? AND airline_id = ?').run(p, Number(ctx.params.id), airline.id);
-    if (!r.changes) fail(404, 'Nie znaleziono trasy');
+    const r = db.prepare('SELECT * FROM routes WHERE id = ? AND airline_id = ?').get(Number(ctx.params.id), airline.id) || fail(404, 'Nie znaleziono trasy');
+    const cur = routePrices(r);
+    db.prepare('UPDATE routes SET price = ?, price_j = ?, price_f = ? WHERE id = ?')
+      .run(parsePrice(body.price, cur.y), parsePrice(body.price_j, cur.j), parsePrice(body.price_f, cur.f), r.id);
     return { ok: true };
   });
 
@@ -258,18 +390,111 @@ export function createApp({ db, secureCookies = false }) {
     return { ok: true };
   });
 
+  // --- Sojusze -------------------------------------------------------------
+  on('GET', '/api/alliances', () => {
+    const day = currentDay(db);
+    return db.prepare('SELECT * FROM alliances ORDER BY id').all().map((al) => {
+      const members = db.prepare('SELECT a.* FROM alliance_members m JOIN airlines a ON a.id = m.airline_id WHERE m.alliance_id = ?').all(al.id);
+      return {
+        id: al.id, name: al.name, members: members.map((m) => ({ name: m.name, code: m.code })),
+        leader: members.find((m) => m.id === al.leader_id)?.name || '',
+        value: members.reduce((s, m) => s + companyValue(db, m, day), 0),
+      };
+    }).sort((a, b) => b.value - a.value);
+  });
+
+  on('POST', '/api/alliances', async (ctx) => {
+    const name = String((await readJson(ctx.req)).name || '').trim();
+    if (name.length < 3 || name.length > 30) fail(400, 'Nazwa sojuszu: 3-30 znaków');
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      if (myAlliance(airline.id)) fail(400, 'Najpierw opuść obecny sojusz');
+      if (db.prepare('SELECT 1 FROM alliances WHERE name = ?').get(name)) fail(409, 'Ta nazwa jest zajęta');
+      const day = currentDay(db);
+      const { lastInsertRowid } = db.prepare('INSERT INTO alliances(name, leader_id, created_day) VALUES (?, ?, ?)').run(name, airline.id, day);
+      db.prepare('INSERT INTO alliance_members(airline_id, alliance_id, joined_day) VALUES (?, ?, ?)').run(airline.id, Number(lastInsertRowid), day);
+      addNews(db, `${airline.name} zakłada sojusz „${name}”.`);
+    });
+    return { ok: true };
+  });
+
+  on('POST', '/api/alliances/:id/join', async (ctx) => {
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      if (myAlliance(airline.id)) fail(400, 'Najpierw opuść obecny sojusz');
+      const al = db.prepare('SELECT * FROM alliances WHERE id = ?').get(Number(ctx.params.id)) || fail(404, 'Nie ma takiego sojuszu');
+      const n = db.prepare('SELECT COUNT(*) AS n FROM alliance_members WHERE alliance_id = ?').get(al.id).n;
+      if (n >= RULES.allianceMaxMembers) fail(400, `Sojusz ma już ${RULES.allianceMaxMembers} członków`);
+      db.prepare('INSERT INTO alliance_members(airline_id, alliance_id, joined_day) VALUES (?, ?, ?)').run(airline.id, al.id, currentDay(db));
+      addNews(db, `${airline.name} dołącza do sojuszu „${al.name}”.`);
+    });
+    return { ok: true };
+  });
+
+  function removeFromAlliance(airlineId) {
+    const m = db.prepare('SELECT alliance_id FROM alliance_members WHERE airline_id = ?').get(airlineId) || fail(400, 'Nie należysz do sojuszu');
+    db.prepare('DELETE FROM alliance_members WHERE airline_id = ?').run(airlineId);
+    const al = db.prepare('SELECT * FROM alliances WHERE id = ?').get(m.alliance_id);
+    const next = db.prepare('SELECT airline_id FROM alliance_members WHERE alliance_id = ? ORDER BY joined_day, airline_id LIMIT 1').get(al.id);
+    if (!next) db.prepare('DELETE FROM alliances WHERE id = ?').run(al.id);
+    else if (al.leader_id === airlineId) db.prepare('UPDATE alliances SET leader_id = ? WHERE id = ?').run(next.airline_id, al.id);
+    return al;
+  }
+
+  on('POST', '/api/alliance/leave', async (ctx) => {
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      const al = removeFromAlliance(airline.id);
+      addNews(db, `${airline.name} opuszcza sojusz „${al.name}”.`);
+    });
+    return { ok: true };
+  });
+
+  on('POST', '/api/alliance/kick', async (ctx) => {
+    const { airlineId } = await readJson(ctx.req);
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      const mine = myAlliance(airline.id) || fail(400, 'Nie należysz do sojuszu');
+      if (mine.leader_id !== airline.id) fail(403, 'Tylko lider może usuwać członków');
+      if (Number(airlineId) === airline.id) fail(400, 'Aby odejść, użyj przycisku „Opuść sojusz”');
+      if (!mine.members.some((m) => m.id === Number(airlineId))) fail(404, 'Ta linia nie należy do sojuszu');
+      removeFromAlliance(Number(airlineId));
+    });
+    return { ok: true };
+  });
+
+  on('GET', '/api/alliance/chat', (ctx) => {
+    const airline = requireAirline(ctx);
+    const m = db.prepare('SELECT alliance_id FROM alliance_members WHERE airline_id = ?').get(airline.id) || fail(400, 'Nie należysz do sojuszu');
+    return db.prepare(
+      `SELECT * FROM (SELECT msg.id, msg.text, msg.created_at, a.name, a.code FROM alliance_messages msg JOIN airlines a ON a.id = msg.airline_id
+       WHERE msg.alliance_id = ? ORDER BY msg.id DESC LIMIT 100) ORDER BY id`
+    ).all(m.alliance_id);
+  });
+
+  on('POST', '/api/alliance/chat', async (ctx) => {
+    const text = String((await readJson(ctx.req)).text || '').trim();
+    if (!text || text.length > 500) fail(400, 'Wiadomość: 1-500 znaków');
+    const airline = requireAirline(ctx);
+    const m = db.prepare('SELECT alliance_id FROM alliance_members WHERE airline_id = ?').get(airline.id) || fail(400, 'Nie należysz do sojuszu');
+    db.prepare('INSERT INTO alliance_messages(alliance_id, airline_id, text, created_at) VALUES (?, ?, ?, ?)').run(m.alliance_id, airline.id, text, Date.now());
+    db.prepare('DELETE FROM alliance_messages WHERE alliance_id = ? AND id NOT IN (SELECT id FROM alliance_messages WHERE alliance_id = ? ORDER BY id DESC LIMIT 500)').run(m.alliance_id, m.alliance_id);
+    return { ok: true };
+  });
+
   // --- Rywalizacja ---------------------------------------------------------
   on('GET', '/api/leaderboard', () => {
     const day = currentDay(db);
     const rows = db.prepare(
-      `SELECT a.*, u.username,
+      `SELECT a.*, u.username, al.name AS alliance,
         (SELECT COUNT(*) FROM aircraft WHERE airline_id = a.id) AS fleet,
         (SELECT COUNT(*) FROM routes WHERE airline_id = a.id) AS routes,
         (SELECT COALESCE(SUM(last_pax), 0) FROM routes WHERE airline_id = a.id) AS pax
-       FROM airlines a JOIN users u ON u.id = a.user_id`
+       FROM airlines a JOIN users u ON u.id = a.user_id
+       LEFT JOIN alliance_members m ON m.airline_id = a.id LEFT JOIN alliances al ON al.id = m.alliance_id`
     ).all();
     return rows
-      .map((a) => ({ name: a.name, code: a.code, owner: a.username, hub: a.hub, reputation: a.reputation, fleet: a.fleet, routes: a.routes, pax: a.pax, value: companyValue(db, a, day) }))
+      .map((a) => ({ name: a.name, code: a.code, owner: a.username, hub: a.hub, alliance: a.alliance, reputation: a.reputation, fleet: a.fleet, routes: a.routes, pax: a.pax, value: companyValue(db, a, day) }))
       .sort((x, y) => y.value - x.value);
   });
 

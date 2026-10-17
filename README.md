@@ -28,16 +28,22 @@ Zmienne środowiskowe:
 ## Zasady gry
 
 - Na start linia dostaje **$200 mln** i jedną bazę (hub).
-- **Samoloty**: 8 typów (od ATR 72 po Boeinga 777). Zakup = pełna cena, leasing = 5% na start
-  i dzienna rata. Samolot własny można sprzedać (traci na wartości z wiekiem), leasingowany zwrócić z karą.
-- **Trasy** otwiera się tylko z własnych baz. Każda para miast ma dzienny popyt zależny od
-  wielkości lotnisk i dystansu. Gracz ustala cenę biletu.
-- **Konkurencja**: gdy kilka linii lata na tej samej trasie, pasażerowie wybierają według ceny,
+- **Lotniska**: 416 lotnisk z całego świata, pogrupowanych według regionów. Wielkość rynku (1-10) decyduje o popycie.
+- **Samoloty**: 36 typów od 9 producentów. Nowe samoloty się **zamawia** i przylatują po kilku dniach gry
+  (turbośmigłowe 3, regionalne 4, wąskokadłubowe 5, szerokokadłubowe 8). Zakup = pełna cena, leasing = 5% na start i dzienna rata.
+- **Rynek wtórny**: broker wystawia używane samoloty (tańsze, od ręki, ale starsze i zużyte), a gracze sprzedają tam
+  swoje maszyny innym graczom za własną cenę.
+- **Klasy podróży**: ekonomiczna, biznes i pierwsza. Każdy samolot ma własny układ foteli (fotel biznes zajmuje 2 miejsca
+  ekonomiczne, pierwszej klasy 3), a każda trasa ma trzy ceny biletów. Na długich trasach popyt na klasy premium jest większy.
+- **Stan techniczny**: samoloty zużywają się podczas lotów. Zużyte kosztują więcej, mogą się zepsuć i obniżają reputację.
+  Przegląd przywraca 100% i trwa 2 dni; można włączyć automatyczne przeglądy poniżej wybranego progu.
+- **Świat**: cena paliwa zmienia się codziennie, popyt zależy od sezonu (wakacje i grudzień to szczyt), a losowe
+  wydarzenia (strajki, targi, kryzysy, boomy turystyczne, skoki cen ropy) zmieniają sytuację na rynku.
+- **Konkurencja**: gdy kilka linii lata na tej samej trasie, pasażerowie każdej klasy wybierają według ceny,
   liczby miejsc i reputacji linii. Zbyt wysoka cena zmniejsza popyt.
-- **Koszty**: paliwo i obsługa za km, opłaty lotniskowe za każdy lot, koszty stałe samolotu,
-  raty leasingu i odsetki od kredytu.
+- **Sojusze**: do 8 linii, wspólny czat i premia codeshare (+15% atrakcyjności tras do baz partnerów).
 - **Kredyt** do $300 mln (6% rocznie). Nowe **bazy** kosztują 2 mln × wielkość lotniska.
-- **Ranking** według wartości firmy: gotówka + wartość własnych samolotów − dług.
+- **Ranking** linii według wartości firmy (gotówka + wartość własnych samolotów − dług) oraz ranking sojuszy.
 
 ## Budowa
 
@@ -46,9 +52,10 @@ server.js        start serwera i zegar gry
 src/app.js       API (JSON) i serwowanie plików
 src/auth.js      hasła (scrypt), sesje, limit prób logowania
 src/game.js      ekonomia i symulacja dnia
-src/data.js      lotniska i typy samolotów
+src/data.js      typy samolotów i wczytanie lotnisk
+src/airports.json lotniska (współrzędne: OpenFlights)
 src/db.js        schemat bazy SQLite
-public/          interfejs (HTML, CSS, JS; mapa przez Leaflet)
+public/          interfejs (HTML, CSS, JS; mapa: Leaflet i kontury Natural Earth w public/vendor)
 test/            testy (node:test)
 ```
 
