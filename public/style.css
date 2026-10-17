@@ -39,6 +39,7 @@ label input, label select { display: block; width: 100%; margin-top: 4px; color:
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th { color: var(--muted); font-weight: 600; }
+th.group { color: var(--text); padding-top: 18px; font-size: 15px; }
 .pos { color: var(--good); } .neg { color: var(--bad); } .muted { color: var(--muted); }
 #map { height: 480px; border-radius: 8px; }
 .chart { display: flex; gap: 2px; height: 160px; border-bottom: 1px dashed transparent; background: linear-gradient(var(--line), var(--line)) 0 50% / 100% 1px no-repeat; }

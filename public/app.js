@@ -300,18 +300,38 @@ function fleet(el) {
   }));
 }
 
+const CATEGORIES = [
+  ['turbo', 'Turbośmigłowe'], ['regional', 'Regionalne odrzutowe'],
+  ['narrow', 'Wąskokadłubowe'], ['wide', 'Szerokokadłubowe (dalekiego zasięgu)'],
+];
+
 function shop(el) {
   const R = state.st.rules;
+  const f = (state.shopFilter ||= { cat: '', maker: '' });
+  const makers = [...new Set(state.st.aircraftTypes.map((t) => t.maker))].sort();
+  const list = state.st.aircraftTypes.filter((t) => (!f.cat || t.cat === f.cat) && (!f.maker || t.maker === f.maker));
+  const cash = state.data.airline.cash;
+  const row = (t) => `<tr>
+    <td><b>${esc(t.name)}</b><div class="muted">${esc(t.maker)}</div></td><td>${t.seats}</td><td>${t.rangeKm.toLocaleString('pl-PL')} km</td><td>${t.speed} km/h</td>
+    <td>$${t.costPerKm}</td><td>${usd(t.dailyFixed)}</td><td>${usd(t.price)}</td>
+    <td>${usd(t.price * R.leaseDepositPct)} na start<br><span class="muted">+ ${usd(t.price * R.leaseDailyPct)}/dzień</span></td>
+    <td><button data-buy="${t.id}" ${cash < t.price ? 'disabled title="Za mało gotówki"' : ''}>Kup</button> <button class="secondary" data-lease="${t.id}">Leasing</button></td>
+  </tr>`;
   el.innerHTML = `<div class="card"><h3>Producenci samolotów</h3>
+    <div class="row">
+      <label>Kategoria<select id="f-cat"><option value="">Wszystkie</option>${CATEGORIES.map(([id, n]) => `<option value="${id}" ${f.cat === id ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label>Producent<select id="f-maker"><option value="">Wszyscy</option>${makers.map((m) => `<option ${f.maker === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
+      <p class="muted">${list.length} z ${state.st.aircraftTypes.length} typów</p>
+    </div>
     <div class="table-wrap"><table>
       <tr><th>Model</th><th>Miejsca</th><th>Zasięg</th><th>Prędkość</th><th>Koszt/km</th><th>Koszt stały/dzień</th><th>Cena</th><th>Leasing</th><th></th></tr>
-      ${state.st.aircraftTypes.map((t) => `<tr>
-        <td><b>${esc(t.name)}</b></td><td>${t.seats}</td><td>${t.rangeKm.toLocaleString('pl-PL')} km</td><td>${t.speed} km/h</td>
-        <td>$${t.costPerKm}</td><td>${usd(t.dailyFixed)}</td><td>${usd(t.price)}</td>
-        <td>${usd(t.price * R.leaseDepositPct)} na start<br><span class="muted">+ ${usd(t.price * R.leaseDailyPct)}/dzień</span></td>
-        <td><button data-buy="${t.id}">Kup</button> <button class="secondary" data-lease="${t.id}">Leasing</button></td>
-      </tr>`).join('')}
+      ${CATEGORIES.map(([id, name]) => {
+        const group = list.filter((t) => t.cat === id);
+        return group.length ? `<tr><th colspan="9" class="group">${name}</th></tr>${group.map(row).join('')}` : '';
+      }).join('')}
     </table></div></div>`;
+  $('#f-cat').onchange = (e) => { f.cat = e.target.value; shop(el); };
+  $('#f-maker').onchange = (e) => { f.maker = e.target.value; shop(el); };
   el.querySelectorAll('[data-buy]').forEach((b) => (b.onclick = () => act(() => api('POST', '/api/aircraft', { typeId: b.dataset.buy, mode: 'buy' }), 'Samolot kupiony!')));
   el.querySelectorAll('[data-lease]').forEach((b) => (b.onclick = () => act(() => api('POST', '/api/aircraft', { typeId: b.dataset.lease, mode: 'lease' }), 'Samolot wyleasingowany!')));
 }
