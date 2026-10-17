@@ -13,7 +13,7 @@ import {
 } from './auth.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.geojson': 'application/geo+json', '.png': 'image/png', '.ico': 'image/x-icon' };
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }

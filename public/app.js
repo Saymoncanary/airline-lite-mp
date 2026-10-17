@@ -92,7 +92,7 @@ async function refresh(auto = false) {
   }
   renderTop();
   // Przy automatycznym odświeżaniu nie przerysowujemy formularzy, w których gracz coś wpisuje.
-  if (!auto || ['dashboard', 'ranking', 'map'].includes(state.tab)) renderMain();
+  if (!auto || ['dashboard', 'ranking'].includes(state.tab)) renderMain();
 }
 
 function renderTop() {
@@ -358,12 +358,16 @@ async function ranking(el) {
 
 async function mapTab(el) {
   el.innerHTML = `<div class="card"><div id="map"></div><p class="muted">Niebieskie linie: Twoje trasy. Szare: trasy konkurencji. Zielone punkty: Twoje bazy.</p></div>`;
-  if (!window.L) { $('#map').textContent = 'Nie udało się wczytać mapy (brak internetu?).'; return; }
-  const map = (state.map = L.map('map', { worldCopyJump: true }).setView([45, 15], 3));
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; OpenStreetMap, &copy; CARTO', maxZoom: 8,
-  }).addTo(map);
-  const all = await api('GET', '/api/routes/all');
+  // Kontury lądów są w repozytorium, więc mapa nie zależy od zewnętrznych serwerów kafelków.
+  const map = (state.map = L.map('map', { minZoom: 2, maxZoom: 7 }).setView([45, 15], 3));
+  map.attributionControl.setPrefix('').addAttribution('Natural Earth');
+  const [land, all] = await Promise.all([
+    state.land || fetch('/vendor/land.geojson').then((r) => r.json()),
+    api('GET', '/api/routes/all'),
+  ]);
+  state.land = land;
+  if (state.map !== map) return; // gracz zdążył zmienić zakładkę
+  L.geoJSON(land, { style: { color: '#3a4a6b', weight: 1, fillColor: '#1c2a45', fillOpacity: 1 }, interactive: false }).addTo(map);
   const mine = state.data.airline.code;
   for (const r of all) {
     const a = airport(r.origin), b = airport(r.dest);
