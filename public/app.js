@@ -15,6 +15,16 @@ const usd = (n) => {
 const signed = (n) => `<span class="${n >= 0 ? 'pos' : 'neg'}">${usd(n)}</span>`;
 const pct = (x) => `${Math.round(x * 100)}%`;
 const airport = (code) => state.st.airportsBy[code];
+const REGIONS = ['Polska', 'Europa Zachodnia', 'Europa Południowa', 'Europa Środkowo-Wschodnia', 'Skandynawia', 'Turcja, Kaukaz',
+  'Rosja i Azja Centralna', 'Bliski Wschód', 'Afryka', 'Azja Południowa', 'Azja Wschodnia', 'Azja Południowo-Wschodnia', 'Oceania',
+  'Ameryka Północna', 'Karaiby i Ameryka Środkowa', 'Ameryka Południowa'];
+// Lista lotnisk pogrupowana według regionów świata.
+function airportOptions({ selected, filter = () => true, label = (a) => `${esc(a.city)} (${a.code})` } = {}) {
+  return REGIONS.map((r) => {
+    const list = state.st.airports.filter((a) => a.region === r && filter(a));
+    return list.length ? `<optgroup label="${esc(r)}">${list.map((a) => `<option value="${a.code}" ${a.code === selected ? 'selected' : ''}>${label(a)}</option>`).join('')}</optgroup>` : '';
+  }).join('');
+}
 const apLabel = (code) => `${code} · ${airport(code).city}`;
 const type = (id) => state.st.typesBy[id];
 const gameDate = (day) => {
@@ -157,7 +167,7 @@ function renderFound() {
         <label>Nazwa linii <input name="name" maxlength="40" required></label>
         <label>Kod (2 znaki) <input name="code" maxlength="2" required style="text-transform:uppercase"></label>
         <label>Baza (hub)
-          <select name="hub">${state.st.airports.map((a) => `<option value="${a.code}" ${a.code === 'WAW' ? 'selected' : ''}>${esc(a.city)} (${a.code}) · rynek ${a.size}/10</option>`).join('')}</select>
+          <select name="hub">${airportOptions({ selected: 'WAW', label: (a) => `${esc(a.city)} (${a.code}) · rynek ${a.size}/10` })}</select>
         </label>
         <button>Załóż linię</button>
       </form>
@@ -216,7 +226,7 @@ function routesTab(el) {
     <div class="card"><h3>Otwórz nową trasę</h3>
       <div class="row">
         <label>Skąd (baza)<select id="r-origin">${bases.map((b) => `<option value="${b}">${esc(apLabel(b))}</option>`).join('')}</select></label>
-        <label>Dokąd<select id="r-dest">${state.st.airports.map((a) => `<option value="${a.code}">${esc(a.city)} (${a.code})</option>`).join('')}</select></label>
+        <label>Dokąd<select id="r-dest">${airportOptions({ label: (a) => `${esc(a.city)} (${a.code}) · ${a.size}/10` })}</select></label>
         <label>Cena biletu (USD)<input id="r-price" type="number" min="10" style="width:120px"></label>
         <button id="r-open">Otwórz trasę</button>
       </div>
@@ -357,7 +367,7 @@ function finance(el) {
     <div class="card"><h3>Bazy</h3>
       <p>Twoje bazy: ${bases.map((b) => esc(apLabel(b))).join(', ')}. Trasy możesz otwierać tylko z baz.</p>
       <div class="row">
-        <label>Nowa baza<select id="base">${state.st.airports.filter((a) => !bases.includes(a.code)).map((a) => `<option value="${a.code}">${esc(a.city)} (${a.code}) · ${usd(a.size * R.baseCostPerSize)}</option>`).join('')}</select></label>
+        <label>Nowa baza<select id="base">${airportOptions({ filter: (a) => !bases.includes(a.code), label: (a) => `${esc(a.city)} (${a.code}) · ${usd(a.size * R.baseCostPerSize)}` })}</select></label>
         <button id="openbase">Otwórz bazę</button>
       </div>
     </div>
@@ -401,7 +411,7 @@ async function mapTab(el) {
   }
   for (const ap of state.st.airports) {
     const base = state.data.bases.includes(ap.code);
-    L.circleMarker([ap.lat, ap.lon], { radius: 3 + ap.size / 2, color: base ? '#3ecf8e' : '#93a3bf', fillOpacity: 0.8 })
+    L.circleMarker([ap.lat, ap.lon], { radius: base ? 6 : 1.5 + ap.size / 3, weight: 1, color: base ? '#3ecf8e' : '#93a3bf', fillOpacity: 0.8 })
       .bindTooltip(`${ap.city} (${ap.code}) · rynek ${ap.size}/10`).addTo(map);
   }
 }
