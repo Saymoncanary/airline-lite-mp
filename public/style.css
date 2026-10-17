@@ -23,6 +23,8 @@ main { max-width: 1150px; margin: 0 auto; padding: 16px; }
 .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 16px; }
 .tabs button { background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
 .tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tabs button.active .muted { color: #dbeeff; }
+.row label:has(#f-cat) { flex: 0 0 auto; }
 button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; }
 button.secondary { background: var(--panel2); border: 1px solid var(--line); color: var(--text); }
 button.danger { background: transparent; border: 1px solid var(--bad); color: var(--bad); }

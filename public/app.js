@@ -307,8 +307,10 @@ const CATEGORIES = [
 
 function shop(el) {
   const R = state.st.rules;
-  const f = (state.shopFilter ||= { cat: '', maker: '' });
-  const makers = [...new Set(state.st.aircraftTypes.map((t) => t.maker))].sort();
+  const f = (state.shopFilter ||= { cat: '', maker: 'Airbus' });
+  // Zakładki producentów: najwięcej modeli najpierw.
+  const count = (m) => state.st.aircraftTypes.filter((t) => t.maker === m).length;
+  const makers = [...new Set(state.st.aircraftTypes.map((t) => t.maker))].sort((a, b) => count(b) - count(a) || a.localeCompare(b));
   const list = state.st.aircraftTypes.filter((t) => (!f.cat || t.cat === f.cat) && (!f.maker || t.maker === f.maker));
   const cash = state.data.airline.cash;
   const row = (t) => `<tr>
@@ -318,9 +320,12 @@ function shop(el) {
     <td><button data-buy="${t.id}" ${cash < t.price ? 'disabled title="Za mało gotówki"' : ''}>Kup</button> <button class="secondary" data-lease="${t.id}">Leasing</button></td>
   </tr>`;
   el.innerHTML = `<div class="card"><h3>Producenci samolotów</h3>
+    <nav class="tabs makers">
+      ${makers.map((m) => `<button data-maker="${esc(m)}" class="${f.maker === m ? 'active' : ''}">${esc(m)} <span class="muted">${count(m)}</span></button>`).join('')}
+      <button data-maker="" class="${f.maker ? '' : 'active'}">Wszyscy <span class="muted">${state.st.aircraftTypes.length}</span></button>
+    </nav>
     <div class="row">
-      <label>Kategoria<select id="f-cat"><option value="">Wszystkie</option>${CATEGORIES.map(([id, n]) => `<option value="${id}" ${f.cat === id ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-      <label>Producent<select id="f-maker"><option value="">Wszyscy</option>${makers.map((m) => `<option ${f.maker === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
+      <label>Kategoria<select id="f-cat" style="min-width:240px"><option value="">Wszystkie</option>${CATEGORIES.map(([id, n]) => `<option value="${id}" ${f.cat === id ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
       <p class="muted">${list.length} z ${state.st.aircraftTypes.length} typów</p>
     </div>
     <div class="table-wrap"><table>
@@ -328,10 +333,10 @@ function shop(el) {
       ${CATEGORIES.map(([id, name]) => {
         const group = list.filter((t) => t.cat === id);
         return group.length ? `<tr><th colspan="9" class="group">${name}</th></tr>${group.map(row).join('')}` : '';
-      }).join('')}
+      }).join('') || '<tr><td colspan="9" class="muted">Ten producent nie ma samolotów w tej kategorii.</td></tr>'}
     </table></div></div>`;
   $('#f-cat').onchange = (e) => { f.cat = e.target.value; shop(el); };
-  $('#f-maker').onchange = (e) => { f.maker = e.target.value; shop(el); };
+  el.querySelectorAll('[data-maker]').forEach((b) => (b.onclick = () => { f.maker = b.dataset.maker; shop(el); }));
   el.querySelectorAll('[data-buy]').forEach((b) => (b.onclick = () => act(() => api('POST', '/api/aircraft', { typeId: b.dataset.buy, mode: 'buy' }), 'Samolot kupiony!')));
   el.querySelectorAll('[data-lease]').forEach((b) => (b.onclick = () => act(() => api('POST', '/api/aircraft', { typeId: b.dataset.lease, mode: 'lease' }), 'Samolot wyleasingowany!')));
 }
