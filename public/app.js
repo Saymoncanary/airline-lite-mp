@@ -214,7 +214,7 @@ function renderFound() {
 // --- Główny widok -----------------------------------------------------------
 const TABS = [
   ['dashboard', 'Pulpit'], ['routes', 'Trasy'], ['fleet', 'Flota'], ['shop', 'Nowe samoloty'], ['used', 'Rynek wtórny'],
-  ['map', 'Mapa'], ['finance', 'Finanse'], ['alliance', 'Sojusz'], ['ranking', 'Ranking'],
+  ['map', 'Mapa'], ['finance', 'Finanse'], ['airline', 'Linia'], ['alliance', 'Sojusz'], ['ranking', 'Ranking'],
 ];
 const CLS = [['y', 'Ekon.'], ['j', 'Biznes'], ['f', 'Pierwsza']];
 
@@ -223,8 +223,12 @@ function renderMain() {
   clearInterval(state.chatTimer);
   view().innerHTML = `<nav class="tabs">${TABS.map(([id, label]) => `<button data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div id="tab"></div>`;
   view().querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; renderMain(); }));
-  ({ dashboard, routes: routesTab, fleet, shop, used: usedTab, map: mapTab, finance, alliance: allianceTab, ranking })[state.tab]($('#tab'));
+  ({ dashboard, routes: routesTab, fleet, shop, used: usedTab, map: mapTab, finance, airline: airlineTab, alliance: allianceTab, ranking })[state.tab]($('#tab'));
 }
+
+const livery = (a) => ({ color1: a.color1, color2: a.color2, logo: a.logo, code: a.code });
+// Mały znak linii: symbol na tle jej kolorów.
+const badge = (a) => `<span class="badge" style="background:${a.color1};color:${a.color2}">${esc(a.logo === 'CODE' ? a.code : a.logo)}</span>`;
 
 const condClass = (c) => (c >= 70 ? 'pos' : c >= 40 ? 'warn' : 'neg');
 
@@ -392,7 +396,7 @@ function fleet(el) {
         const delivered = a.delivery_day <= day;
         return `<tr>
           <td>${a.id}</td>
-          <td>${esc(t.name)}<div class="muted">${a.leased ? `Leasing (${usd(a.leaseDaily)}/dzień)` : `Własny, wart ${usd(a.value)}`} · ${Math.max(0, Math.round((day - a.acquired_day) / 365 * 10) / 10)} lat</div></td>
+          <td class="fleet-type">${planeSvg(t, livery(airline))}${esc(t.name)}<div class="muted">${a.leased ? `Leasing (${usd(a.leaseDaily)}/dzień)` : `Własny, wart ${usd(a.value)}`} · ${Math.max(0, Math.round((day - a.acquired_day) / 365 * 10) / 10)} lat</div></td>
           <td>${status(a)}</td>
           <td><b class="${condClass(a.condition)}">${Math.round(a.condition)}%</b></td>
           <td><input type="number" min="0" value="${a.seats_j}" data-j="${a.id}" style="width:60px"> <input type="number" min="0" value="${a.seats_f}" data-f="${a.id}" style="width:60px">
@@ -683,13 +687,37 @@ async function allianceTab(el) {
   };
 }
 
+// Zakładka „Linia”: wizerunek, personel, marketing i osiągnięcia.
+function airlineTab(el) {
+  const { airline } = state.data;
+  const sample = state.st.aircraftTypes.find((t) => t.id === 'A320');
+  const wide = state.st.aircraftTypes.find((t) => t.id === 'B789');
+  el.innerHTML = `
+    <div class="card"><h3>Malowanie i logo</h3>
+      <div class="livery-preview" id="liv-preview"></div>
+      <div class="row">
+        <label>Kolor statecznika<input type="color" id="liv-c1" value="${airline.color1}"></label>
+        <label>Kolor pasa i logo<input type="color" id="liv-c2" value="${airline.color2}"></label>
+        <label>Symbol na stateczniku<select id="liv-logo">${state.st.logos.map((l) => `<option value="${esc(l)}" ${l === airline.logo ? 'selected' : ''}>${l === 'CODE' ? `Kod linii (${esc(airline.code)})` : l}</option>`).join('')}</select></label>
+        <button id="liv-save">Zapisz malowanie</button>
+      </div>
+      <p class="muted">Barwy widać na samolotach we „Flocie”, na mapie tras i w rankingu.</p>
+    </div>
+    <div id="airline-more"></div>`;
+  const current = () => ({ color1: $('#liv-c1').value, color2: $('#liv-c2').value, logo: $('#liv-logo').value, code: airline.code });
+  const preview = () => { $('#liv-preview').innerHTML = planeSvg(sample, current()) + planeSvg(wide, current()); };
+  for (const id of ['#liv-c1', '#liv-c2', '#liv-logo']) $(id).oninput = preview;
+  preview();
+  $('#liv-save').onclick = () => act(() => api('POST', '/api/airline/livery', current()), 'Nowe malowanie zapisane');
+}
+
 async function ranking(el) {
   el.innerHTML = '<div class="card muted">Ładowanie…</div>';
   const [rows, alliances] = await Promise.all([api('GET', '/api/leaderboard'), api('GET', '/api/alliances')]);
   const mine = state.data.airline.code;
   el.innerHTML = `<div class="card"><h3>Ranking linii lotniczych</h3><div class="table-wrap"><table>
     <tr><th>#</th><th>Linia</th><th>Gracz</th><th>Sojusz</th><th>Hub</th><th>Wartość firmy</th><th>Flota</th><th>Trasy</th><th>Pasażerowie/dzień</th><th>Reputacja</th></tr>
-    ${rows.map((r, i) => `<tr class="${r.code === mine ? 'me' : ''}"><td>${i + 1}</td><td>${esc(r.name)} (${esc(r.code)})</td><td>${esc(r.owner)}</td><td>${esc(r.alliance || '—')}</td><td>${r.hub}</td>
+    ${rows.map((r, i) => `<tr class="${r.code === mine ? 'me' : ''}"><td>${i + 1}</td><td>${badge(r)} ${esc(r.name)} (${esc(r.code)})</td><td>${esc(r.owner)}</td><td>${esc(r.alliance || '—')}</td><td>${r.hub}</td>
       <td><b>${usd(r.value)}</b></td><td>${r.fleet}</td><td>${r.routes}</td><td>${r.pax.toLocaleString('pl-PL')}</td><td>${r.reputation.toFixed(1)}</td></tr>`).join('')}
   </table></div></div>
   ${alliances.length ? `<div class="card"><h3>Ranking sojuszy</h3><div class="table-wrap"><table>
@@ -699,7 +727,7 @@ async function ranking(el) {
 }
 
 async function mapTab(el) {
-  el.innerHTML = `<div class="card"><div id="map"></div><p class="muted">Niebieskie linie: Twoje trasy. Szare: trasy konkurencji. Zielone punkty: Twoje bazy.</p></div>`;
+  el.innerHTML = `<div class="card"><div id="map"></div><p class="muted">Każda linia ma trasy w swoim kolorze, Twoje są grubsze. Zielone punkty: Twoje bazy.</p></div>`;
   // Kontury lądów są w repozytorium, więc mapa nie zależy od zewnętrznych serwerów kafelków.
   const map = (state.map = L.map('map', { minZoom: 2, maxZoom: 7 }).setView([45, 15], 3));
   map.attributionControl.setPrefix('').addAttribution('Natural Earth');
@@ -713,7 +741,7 @@ async function mapTab(el) {
   const mine = state.data.airline.code;
   for (const r of all) {
     const a = airport(r.origin), b = airport(r.dest);
-    L.polyline([[a.lat, a.lon], [b.lat, b.lon]], { color: r.code === mine ? '#3fa9f5' : '#6b7a99', weight: r.code === mine ? 3 : 1.5, opacity: 0.8 })
+    L.polyline([[a.lat, a.lon], [b.lat, b.lon]], { color: r.color1 || '#6b7a99', weight: r.code === mine ? 3.5 : 1.5, opacity: r.code === mine ? 0.95 : 0.6 })
       .bindTooltip(`${r.code}: ${r.origin}–${r.dest}`).addTo(map);
   }
   for (const ap of state.st.airports) {

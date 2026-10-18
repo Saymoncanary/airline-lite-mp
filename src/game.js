@@ -24,6 +24,9 @@ export const RULES = {
   connectMaxDetour: 1.5, // przesiadka ma sens, gdy trasa przez hub jest najwyżej o 50% dłuższa
 };
 
+// Symbole do wyboru na stateczniku ('CODE' = kod linii).
+export const LIVERY_LOGOS = ['CODE', '★', '✈', '●', '▲', '◆', '✦', '❖', '✚', '☀', '♛', '⚡', '❄', '♥', '☘'];
+
 export const CLASSES = ['y', 'j', 'f'];
 export const CLASS_NAMES = { y: 'ekonomiczna', j: 'biznes', f: 'pierwsza' };
 

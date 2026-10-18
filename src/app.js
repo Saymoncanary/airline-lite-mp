@@ -4,7 +4,7 @@ import { join, normalize, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AIRPORTS, AIRCRAFT_TYPES } from './data.js';
 import {
-  RULES, CLASSES, MONTHS, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, roundTripHours, leaseDaily, aircraftValue,
+  RULES, CLASSES, MONTHS, LIVERY_LOGOS, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, roundTripHours, leaseDaily, aircraftValue,
   seatMap, validSeatConfig, maintenanceCost, routePrices, seasonMult, gameMonth, activeEvents,
   pairKey, tx, currentDay, addNews, companyValue,
 } from './game.js';
@@ -108,7 +108,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
 
   on('GET', '/api/me', (ctx) => ({ user: ctx.user, airline: ctx.user ? getAirline(ctx.user.id) || null : null }));
 
-  on('GET', '/api/static', () => ({ airports: Object.values(AIRPORTS), aircraftTypes: Object.values(AIRCRAFT_TYPES), rules: RULES }));
+  on('GET', '/api/static', () => ({ airports: Object.values(AIRPORTS), aircraftTypes: Object.values(AIRCRAFT_TYPES), rules: RULES, logos: LIVERY_LOGOS }));
 
   // --- Linia lotnicza ------------------------------------------------------
   on('POST', '/api/airline', async (ctx) => {
@@ -120,12 +120,25 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     if (!/^[A-Z0-9]{2}$/.test(code)) fail(400, 'Kod linii: 2 znaki (np. LO)');
     const hub = airportOr400(body.hub);
     if (db.prepare('SELECT 1 FROM airlines WHERE name = ? OR code = ?').get(name, code)) fail(409, 'Nazwa lub kod linii są już zajęte');
+    // Losowe barwy na start; gracz zmieni je w zakładce „Linia”.
+    const palette = ['#1d4ed8', '#dc2626', '#16a34a', '#7c3aed', '#ea580c', '#0e7490', '#be185d', '#ca8a04', '#0f172a'];
+    const c1 = palette[Math.floor(Math.random() * palette.length)];
+    const c2 = palette.filter((c) => c !== c1)[Math.floor(Math.random() * (palette.length - 1))];
     tx(db, () => {
-      const { lastInsertRowid } = db.prepare('INSERT INTO airlines(user_id, name, code, hub, cash, founded_day) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(ctx.user.id, name, code, hub, RULES.startingCash, currentDay(db));
+      const { lastInsertRowid } = db.prepare('INSERT INTO airlines(user_id, name, code, hub, cash, founded_day, color1, color2) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(ctx.user.id, name, code, hub, RULES.startingCash, currentDay(db), c1, c2);
       db.prepare('INSERT INTO bases(airline_id, airport) VALUES (?, ?)').run(Number(lastInsertRowid), hub);
       addNews(db, `Nowa linia ${name} (${code}) startuje! Baza: ${AIRPORTS[hub].city} (${hub}).`);
     });
+    return { ok: true };
+  });
+
+  on('POST', '/api/airline/livery', async (ctx) => {
+    const { color1, color2, logo } = await readJson(ctx.req);
+    const hex = /^#[0-9a-fA-F]{6}$/;
+    if (!hex.test(color1) || !hex.test(color2)) fail(400, 'Kolor w formacie #RRGGBB');
+    if (!LIVERY_LOGOS.includes(logo)) fail(400, 'Nieznany symbol');
+    db.prepare('UPDATE airlines SET color1 = ?, color2 = ?, logo = ? WHERE id = ?').run(color1.toLowerCase(), color2.toLowerCase(), logo, requireAirline(ctx).id);
     return { ok: true };
   });
 
@@ -538,14 +551,14 @@ export function createApp({ db, clock = null, secureCookies = false }) {
        LEFT JOIN alliance_members m ON m.airline_id = a.id LEFT JOIN alliances al ON al.id = m.alliance_id`
     ).all();
     return rows
-      .map((a) => ({ name: a.name, code: a.code, owner: a.username, hub: a.hub, alliance: a.alliance, reputation: a.reputation, fleet: a.fleet, routes: a.routes, pax: a.pax, value: companyValue(db, a, day) }))
+      .map((a) => ({ name: a.name, code: a.code, color1: a.color1, color2: a.color2, logo: a.logo, owner: a.username, hub: a.hub, alliance: a.alliance, reputation: a.reputation, fleet: a.fleet, routes: a.routes, pax: a.pax, value: companyValue(db, a, day) }))
       .sort((x, y) => y.value - x.value);
   });
 
   on('GET', '/api/news', () => db.prepare('SELECT day, text FROM news ORDER BY id DESC LIMIT 30').all());
 
   on('GET', '/api/routes/all', () =>
-    db.prepare('SELECT r.origin, r.dest, a.code FROM routes r JOIN airlines a ON a.id = r.airline_id').all());
+    db.prepare('SELECT r.origin, r.dest, a.code, a.color1 FROM routes r JOIN airlines a ON a.id = r.airline_id').all());
 
   // --- Obsługa żądań -------------------------------------------------------
   async function serveStatic(pathname, res) {

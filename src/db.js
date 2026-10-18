@@ -131,6 +131,9 @@ export function openDb(file) {
   addColumn('aircraft', 'maintenance_until', 'INTEGER NOT NULL DEFAULT 0');
 
   addColumn('daily_stats', 'detail', 'TEXT');
+  addColumn('airlines', 'color1', "TEXT NOT NULL DEFAULT '#1d4ed8'");
+  addColumn('airlines', 'color2', "TEXT NOT NULL DEFAULT '#dc2626'");
+  addColumn('airlines', 'logo', "TEXT NOT NULL DEFAULT '★'");
   // Dziennik operacji gotówkowych poza codziennym wynikiem (zakupy, sprzedaż, kredyty...).
   db.exec(`
     CREATE TABLE IF NOT EXISTS ledger (

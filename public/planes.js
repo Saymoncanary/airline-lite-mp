@@ -71,11 +71,12 @@ const MAKER_COLORS = {
   'De Havilland': '#7c3aed', Sukhoi: '#be123c', COMAC: '#e11d48',
 };
 
-function planeSvg(t) {
+// liv = barwy linii gracza { color1, color2, logo, code }; bez niej kolor producenta.
+function planeSvg(t, liv) {
   const spec = PLANE_SPECS[t.id] || { f: 'a320', L: 38, H: 12, span: 35, eng: [4.4, 2.3] };
   const p = { ...FAMILIES[spec.f], ...spec };
   const { L, D, gear } = p;
-  const color = MAKER_COLORS[t.maker] || '#64748b';
+  const color = liv?.color1 || MAKER_COLORS[t.maker] || '#64748b', stripe = liv?.color2 || color;
   const W = 220, VH = 76;
   const k = Math.min((125 + 1.25 * L) / L, (VH - 5) / p.H); // większe są dłuższe, ale wszystkie czytelne
   const x0 = (W - L * k) / 2, y0 = VH - 2.5 - (D / 2 + gear) * k;
@@ -120,6 +121,11 @@ function planeSvg(t) {
   const fx = L - crf - tl * 0.12, tanF = Math.tan((p.finSweep * Math.PI) / 180);
   const finTipLE = fx + hf * tanF, finTip = top - hf, finTipC = crf * (p.tail === 'T' ? 0.62 : 0.38);
   out.push(`<path d="M${n(fx - crf * 0.45)},${n(top + 0.03 * D)} Q${n(fx - 0.05 * crf)},${n(top - 0.02 * D)} ${n(fx + 0.2 * hf * tanF)},${n(top - 0.2 * hf)} L${n(finTipLE)},${n(finTip)} L${n(finTipLE + finTipC)},${n(finTip)} L${n(fx + crf)},${n(tailTop + 0.1 * D)} Z" fill="${color}" ${line}/>`);
+  if (liv?.logo) {
+    const text = liv.logo === 'CODE' ? liv.code : liv.logo, fs = hf * (liv.logo === 'CODE' ? 0.3 : 0.38);
+    const lx = (fx + crf * 0.55 + finTipLE + finTipC * 0.4) / 2, ly = top - hf * 0.42;
+    out.push(`<text x="${n(lx)}" y="${n(ly)}" font-size="${n(fs)}" font-weight="700" font-family="system-ui, sans-serif" fill="${stripe === color ? '#fff' : stripe}" text-anchor="middle" dominant-baseline="central">${text}</text>`);
+  }
   out.push(`<line x1="${n(finTipLE + finTipC * 0.72)}" y1="${n(finTip + 0.3)}" x2="${n(fx + crf * 0.86)}" y2="${n(top - 0.05 * D)}" stroke="#0f172a" stroke-opacity=".25" stroke-width="0.6" vector-effect="non-scaling-stroke"/>`); // ster kierunku
 
   // Owiewka skrzydło-kadłub (pod kadłubem, wystaje tylko jej dół).
@@ -135,7 +141,7 @@ function planeSvg(t) {
   out.push(`<clipPath id="${id}"><polygon points="${P(hull)}"/></clipPath>`);
   out.push(`<polygon points="${P(hull)}" fill="#f4f7fa"/>`);
   out.push(`<g clip-path="url(#${id})"><rect x="0" y="${n(0.2 * D)}" width="${n(L)}" height="${n(D)}" fill="#d5dce4"/>`
-    + `<path d="M0,${n(0.12 * D)} L${n(xt)},${n(0.12 * D)} L${n(L)},${n(tailTop)} L${n(L)},${n(tailTop + 0.06 * D)} L${n(xt)},${n(0.19 * D)} L0,${n(0.19 * D)} Z" fill="${color}"/></g>`);
+    + `<path d="M0,${n(0.12 * D)} L${n(xt)},${n(0.12 * D)} L${n(L)},${n(tailTop)} L${n(L)},${n(tailTop + 0.06 * D)} L${n(xt)},${n(0.19 * D)} L0,${n(0.19 * D)} Z" fill="${stripe}"/></g>`);
   out.push(`<polygon points="${P(hull)}" fill="none" ${line}/>`);
   if (p.hump) out.push(`<line x1="${n(0.15 * L)}" y1="${n(top)}" x2="${n(0.3 * L)}" y2="${n(top)}" stroke="#f4f7fa" stroke-width="1.2" vector-effect="non-scaling-stroke"/>`);
 
