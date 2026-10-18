@@ -237,3 +237,45 @@ function planeSvg(t) {
 
   return `<svg class="plane" viewBox="0 0 ${W} ${VH}" role="img" aria-label="${t.name}"><g transform="translate(${n(x0)},${n(y0)}) scale(${n(k)})">${out.join('')}</g></svg>`;
 }
+
+// Prawdziwe zdjęcia: artykuł w angielskiej Wikipedii dla każdego typu. Przeglądarka gracza
+// pobiera zdjęcie z infoboksu (Wikimedia Commons); gdy się nie uda, zostaje rysunek.
+const PLANE_WIKI = {
+  ATR42: 'ATR 42', ATR72: 'ATR 72', DH8D: 'De Havilland Canada Dash 8',
+  CRJ7: 'Bombardier CRJ700 series', CRJ9: 'Bombardier CRJ700 series',
+  E175: 'Embraer E-Jet family', E190: 'Embraer E-Jet family', E290: 'Embraer E-Jet E2 family', E195: 'Embraer E-Jet E2 family',
+  SU95: 'Sukhoi Superjet 100', BCS1: 'Airbus A220', BCS3: 'Airbus A220',
+  A319: 'Airbus A320neo family', A320C: 'Airbus A320 family', A320: 'Airbus A320neo family', A321: 'Airbus A321neo', A21X: 'Airbus A321neo',
+  B737: 'Boeing 737 Next Generation', B738: 'Boeing 737 Next Generation', B38M: 'Boeing 737 MAX', B3XM: 'Boeing 737 MAX',
+  B752: 'Boeing 757', C919: 'Comac C919', B763: 'Boeing 767', A333: 'Airbus A330', A339: 'Airbus A330neo',
+  B788: 'Boeing 787 Dreamliner', B789: 'Boeing 787 Dreamliner', B78X: 'Boeing 787 Dreamliner',
+  A359: 'Airbus A350', A35K: 'Airbus A350', B772: 'Boeing 777', B77W: 'Boeing 777', B779: 'Boeing 777X',
+  B748: 'Boeing 747-8', A388: 'Airbus A380',
+};
+const planePhotoCache = new Map();
+
+function planePhoto(t) {
+  const title = PLANE_WIKI[t.id];
+  if (!title) return planeSvg(t);
+  const href = `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}`;
+  return `<a class="plane-photo" href="${href}" target="_blank" rel="noopener" title="Zdjęcie: Wikipedia / Wikimedia Commons">`
+    + `<img alt="${t.name}" data-wiki="${title}" hidden>${planeSvg(t)}</a>`;
+}
+
+// Podmienia rysunki na zdjęcia w podanym fragmencie strony.
+function loadPlanePhotos(root) {
+  for (const img of root.querySelectorAll('img[data-wiki]')) {
+    const title = img.dataset.wiki;
+    if (!planePhotoCache.has(title)) {
+      planePhotoCache.set(title, fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/ /g, '_'))}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => d?.thumbnail?.source?.replace(/\/\d+px-/, '/400px-') || null)
+        .catch(() => null));
+    }
+    planePhotoCache.get(title).then((src) => {
+      if (!src) return;
+      img.onload = () => { img.hidden = false; img.nextElementSibling?.remove(); };
+      img.src = src;
+    });
+  }
+}
