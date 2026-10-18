@@ -386,8 +386,8 @@ function shop(el) {
   </tr>`;
   el.innerHTML = `<div class="card"><h3>Zamów nowy samolot u producenta</h3>
     <nav class="tabs makers">
-      ${makers.map((m) => `<button data-maker="${esc(m)}" class="${f.maker === m ? 'active' : ''}">${esc(m)} <span class="muted">${count(m)}</span></button>`).join('')}
-      <button data-maker="" class="${f.maker ? '' : 'active'}">Wszyscy <span class="muted">${state.st.aircraftTypes.length}</span></button>
+      ${makers.map((m) => `<button data-maker="${esc(m)}" class="${f.maker === m ? 'active' : ''}">${esc(m)}</button>`).join('')}
+      <button data-maker="" class="${f.maker ? '' : 'active'}">Wszyscy</button>
     </nav>
     <div class="row">
       <label>Kategoria<select id="f-cat" style="min-width:240px"><option value="">Wszystkie</option>${CATEGORIES.map(([id, n]) => `<option value="${id}" ${f.cat === id ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
