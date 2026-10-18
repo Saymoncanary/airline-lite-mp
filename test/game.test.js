@@ -399,7 +399,7 @@ test('fuzje i przejęcia oraz statystyki lotniska', async () => {
   // Sprzedający zakłada nową linię z kapitałem powiększonym o cenę.
   assert.equal((await b('GET', '/api/airline')).status, 400);
   await b('POST', '/api/airline', { name: 'Bolek Jet 2', code: 'B2', hub: 'KRK' });
-  assert.equal((await b('GET', '/api/airline')).data.airline.cash, RULES.startingCash + price);
+  assert.equal((await b('GET', '/api/airline')).data.airline.cash, price);
 
   // Linia komputerowa: przejęcie od razu i bez powrotu do końca sezonu.
   tx(db, () => ensureBots(db, 1, 7));
@@ -410,6 +410,22 @@ test('fuzje i przejęcia oraz statystyki lotniska', async () => {
   tx(db, () => ensureBots(db, 1, 8));
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM airlines WHERE code = 'ES'").get().n, 0);
   assert.ok(botPrice >= RULES.takeoverMin);
+  server.closeAllConnections();
+  server.close();
+});
+
+test('odporność API na dziwne dane', async () => {
+  const { server, base } = await startServer();
+  const c = client(base);
+  assert.equal((await c('POST', '/api/register', { username: ['bobby'], password: 'haslo1234' })).status, 400);
+  const regs = await Promise.all([0, 1, 2].map(() => client(base)('POST', '/api/register', { username: 'tlok', password: 'haslo1234' })));
+  assert.deepEqual(regs.map((r) => r.status).sort(), [200, 409, 409]);
+  await c('POST', '/api/register', { username: 'dziwny', password: 'haslo1234' });
+  await c('POST', '/api/airline', { name: 'Dziwna Linia', code: 'DZ', hub: 'WAW' });
+  assert.equal((await c('POST', '/api/aircraft', { typeId: '__proto__', mode: 'buy' })).status, 400);
+  assert.equal((await c('GET', '/api/airport/%E0')).status, 400);
+  const bad = await fetch(base + '/api/me', { headers: { cookie: 'x=%zz' } });
+  assert.equal(bad.status, 200);
   server.closeAllConnections();
   server.close();
 });

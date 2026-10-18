@@ -23,7 +23,11 @@ const fail = (status, msg) => { throw new HttpError(status, msg); };
 const money = (n) => `$${(n / 1e6).toFixed(1)} mln`;
 
 function parseCookies(header = '') {
-  return Object.fromEntries(header.split(';').map((c) => c.trim().split('=')).filter(([k]) => k).map(([k, ...v]) => [k, decodeURIComponent(v.join('='))]));
+  return Object.fromEntries(header.split(';').map((c) => c.trim().split('=')).filter(([k]) => k).map(([k, ...v]) => [k, safeDecode(v.join('='))]));
+}
+// Błędnie zakodowany tekst (np. obce ciasteczko „x=%zz”) nie może wywracać zapytania.
+function safeDecode(s) {
+  try { return decodeURIComponent(s); } catch { return s; }
 }
 
 async function readJson(req) {
@@ -76,10 +80,12 @@ export function createApp({ db, clock = null, secureCookies = false }) {
   // --- Konto ---------------------------------------------------------------
   on('POST', '/api/register', async (ctx) => {
     const { username, password } = await readJson(ctx.req);
-    if (!/^[A-Za-z0-9_]{3,20}$/.test(username || '')) fail(400, 'Login: 3-20 znaków (litery, cyfry, _)');
+    if (typeof username !== 'string' || !/^[A-Za-z0-9_]{3,20}$/.test(username)) fail(400, 'Login: 3-20 znaków (litery, cyfry, _)');
     if (typeof password !== 'string' || password.length < 8 || password.length > 200) fail(400, 'Hasło musi mieć co najmniej 8 znaków');
     if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) fail(409, 'Ten login jest zajęty');
     const { salt, hash } = await hashPassword(password);
+    // Ktoś mógł zająć ten login w czasie liczenia skrótu hasła.
+    if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) fail(409, 'Ten login jest zajęty');
     const { lastInsertRowid } = db.prepare('INSERT INTO users(username, pass_hash, salt, created_at) VALUES (?, ?, ?, ?)').run(username, hash, salt, Date.now());
     const s = createSession(db, Number(lastInsertRowid));
     ctx.res.setHeader('Set-Cookie', sessionCookie(s.token, s.maxAge));
@@ -87,14 +93,15 @@ export function createApp({ db, clock = null, secureCookies = false }) {
   });
 
   on('POST', '/api/login', async (ctx) => {
-    if (loginBlocked(ctx.ip)) fail(429, 'Za dużo prób logowania. Spróbuj za kilka minut.');
     const { username, password } = await readJson(ctx.req);
+    const key = `${ctx.ip}|${String(username || '').toLowerCase()}`;
+    if (loginBlocked(key)) fail(429, 'Za dużo prób logowania. Spróbuj za kilka minut.');
     const u = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username || ''));
     if (!u || typeof password !== 'string' || !(await verifyPassword(password, u.salt, u.pass_hash))) {
-      recordLoginFailure(ctx.ip);
+      recordLoginFailure(key);
       fail(401, 'Nieprawidłowy login lub hasło');
     }
-    clearLoginFailures(ctx.ip);
+    clearLoginFailures(key);
     const s = createSession(db, u.id);
     ctx.res.setHeader('Set-Cookie', sessionCookie(s.token, s.maxAge));
     return { ok: true };
@@ -129,10 +136,12 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       const { lastInsertRowid } = db.prepare('INSERT INTO airlines(user_id, name, code, hub, cash, founded_day, color1, color2) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(ctx.user.id, name, code, hub, RULES.startingCash, currentDay(db), c1, c2);
       db.prepare('INSERT INTO bases(airline_id, airport) VALUES (?, ?)').run(Number(lastInsertRowid), hub);
-      // Pieniądze ze sprzedaży poprzedniej linii powiększają kapitał startowy.
+      // Kto sprzedał linię w tym sezonie, zaczyna za pieniądze ze sprzedaży zamiast kapitału startowego
+      // (inaczej sprzedawanie linii znajomemu i zakładanie nowej tworzyłoby pieniądze z niczego).
       const { bonus_cash: bonus } = db.prepare('SELECT bonus_cash FROM users WHERE id = ?').get(ctx.user.id);
       if (bonus > 0) {
-        earn(Number(lastInsertRowid), bonus, 'Kapitał ze sprzedaży poprzedniej linii');
+        db.prepare('UPDATE airlines SET cash = ? WHERE id = ?').run(bonus, Number(lastInsertRowid));
+        ledger(Number(lastInsertRowid), bonus, 'Kapitał ze sprzedaży poprzedniej linii');
         db.prepare('UPDATE users SET bonus_cash = 0 WHERE id = ?').run(ctx.user.id);
       }
       if (isSlotAirport(hub)) {
@@ -302,7 +311,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
   // Nowe samoloty się zamawia: przylatują po kilku dniach gry, zależnie od wielkości.
   on('POST', '/api/aircraft', async (ctx) => {
     const { typeId, mode } = await readJson(ctx.req);
-    const t = AIRCRAFT_TYPES[typeId] || fail(400, 'Nieznany typ samolotu');
+    const t = (typeof typeId === 'string' && Object.hasOwn(AIRCRAFT_TYPES, typeId) && AIRCRAFT_TYPES[typeId]) || fail(400, 'Nieznany typ samolotu');
     if (!['buy', 'lease'].includes(mode)) fail(400, 'Tryb: buy lub lease');
     const day = currentDay(db);
     const delivery = day + RULES.deliveryDays[t.cat];
@@ -730,14 +739,24 @@ export function createApp({ db, clock = null, secureCookies = false }) {
   });
 
   on('POST', '/api/takeovers/:id/accept', async (ctx) => {
-    tx(db, () => {
+    const r = tx(db, () => {
       const airline = requireAirline(ctx);
       const o = db.prepare('SELECT * FROM takeover_offers WHERE id = ? AND target_id = ?').get(Number(ctx.params.id), airline.id) || fail(404, 'Nie ma takiej oferty');
       const buyer = db.prepare('SELECT * FROM airlines WHERE id = ?').get(o.buyer_id);
-      if (buyer.cash < o.price) fail(400, `${buyer.name} nie ma już pieniędzy na tę ofertę`);
-      mergeAirlines(db, buyer.id, airline.id, o.price);
+      // Kupujący nie zapłaci więcej, niż zaoferował, a gdy linia straciła na wartości od złożenia oferty
+      // (np. właściciel wyprowadził gotówkę), oferta przepada.
+      const now = takeoverPrice(db, airline);
+      if (now < o.price * 0.9) {
+        db.prepare('DELETE FROM takeover_offers WHERE id = ?').run(o.id);
+        return { ok: false, error: `Wartość Twojej linii spadła od złożenia oferty (dziś ${money(now)}), więc oferta wygasła` };
+      }
+      const price = Math.min(now, o.price);
+      if (buyer.cash < price) fail(400, `${buyer.name} nie ma już pieniędzy na tę ofertę`);
+      mergeAirlines(db, buyer.id, airline.id, price);
+      return { ok: true };
     });
-    return { ok: true };
+    if (!r.ok) fail(409, r.error);
+    return r;
   });
 
   on('POST', '/api/takeovers/:id/reject', async (ctx) => {
@@ -822,7 +841,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
         req, res, token, query: url.searchParams,
         ip: req.socket.remoteAddress,
         user: userFromToken(db, token),
-        params: Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(url.pathname.match(route.re)[i + 1])])),
+        params: Object.fromEntries(route.keys.map((k, i) => [k, safeDecode(url.pathname.match(route.re)[i + 1])])),
       };
       const isPublic = ['/api/register', '/api/login', '/api/me', '/api/static', '/api/leaderboard', '/api/news', '/api/season'].includes(url.pathname);
       if (!ctx.user && !isPublic) return send(401, { error: 'Zaloguj się' });

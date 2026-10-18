@@ -36,7 +36,8 @@ export function destroySession(db, token) {
   if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
 }
 
-// Prosty limit nieudanych logowań: max 10 prób na 15 minut z jednego IP.
+// Prosty limit nieudanych logowań: max 10 prób na 15 minut na konto z jednego adresu.
+// Klucz zawiera login, żeby za wspólnym proxy (hosting) jedna osoba nie blokowała logowania wszystkim.
 const failures = new Map();
 export function loginBlocked(ip) {
   const f = failures.get(ip);
@@ -44,6 +45,9 @@ export function loginBlocked(ip) {
 }
 export function recordLoginFailure(ip) {
   const f = failures.get(ip);
+  if (failures.size > 10_000) {
+    for (const [k, v] of failures) if (Date.now() - v.since > 15 * 60e3) failures.delete(k);
+  }
   if (!f || Date.now() - f.since > 15 * 60e3) failures.set(ip, { count: 1, since: Date.now() });
   else f.count++;
 }

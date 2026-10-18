@@ -125,7 +125,9 @@ async function refresh(auto = false) {
   tickCountdown();
   // Przy automatycznym odświeżaniu nie przerysowujemy formularzy, w których gracz coś wpisuje.
   const allianceChanged = state.tab === 'alliance' && before !== members(state.data) && !$('#chat-text')?.value && !$('#al-name')?.value;
-  if (!auto || ['dashboard', 'ranking'].includes(state.tab) || allianceChanged) renderMain();
+  // Ranking odświeżamy w miejscu, żeby strona nie przewijała się do góry.
+  if (auto && state.tab === 'ranking') ranking($('#tab'));
+  else if (!auto || state.tab === 'dashboard' || allianceChanged) renderMain();
 }
 
 // Odliczanie do następnego dnia gry, liczone od czasu podanego przez serwer.
@@ -197,7 +199,7 @@ function renderFound() {
   view().innerHTML = `
     <div class="card auth" style="max-width:480px">
       <h2>Załóż swoją linię lotniczą</h2>
-      <p class="muted">Na start dostajesz ${usd(state.st.rules.startingCash)}${state.me.user.bonus > 0 ? ` plus <b>${usd(state.me.user.bonus)}</b> ze sprzedaży poprzedniej linii` : ''}. Wybierz port macierzysty: duże lotnisko to duży popyt, ale i silna konkurencja.</p>
+      <p class="muted">Na start dostajesz ${state.me.user.bonus > 0 ? `<b>${usd(state.me.user.bonus)}</b> ze sprzedaży poprzedniej linii` : usd(state.st.rules.startingCash)}. Wybierz port macierzysty: duże lotnisko to duży popyt, ale i silna konkurencja.</p>
       <form id="foundform">
         <label>Nazwa linii <input name="name" maxlength="40" required></label>
         <label>Kod (2 znaki) <input name="code" maxlength="2" required style="text-transform:uppercase"></label>
@@ -268,7 +270,11 @@ function dashboard(el) {
     ${state.data.takeoverOffers ? '<div class="card offer-alert" id="dash-offers"></div>' : ''}
     ${fleet.length === 0 ? '<div class="card"><b>Pierwsze kroki:</b> 1) zamów samolot w „Nowe samoloty” albo kup używany na „Rynku wtórnym”, 2) otwórz trasę ze swojej bazy w zakładce „Trasy”, 3) gdy samolot dotrze, przypisz go do trasy we „Flocie”.</div>' : ''}
     <div class="card"><h3>Wiadomości ze świata lotnictwa</h3><ul class="news" id="news"><li class="muted">Ładowanie…</li></ul></div>`;
-  if (state.data.takeoverOffers) api('GET', '/api/takeovers').then((t) => { const box = $('#dash-offers'); if (box) takeoverIncoming(box, t.incoming); });
+  if (state.data.takeoverOffers) {
+    // Ostatnio pobrane oferty pokazujemy od razu, żeby przyciski nie znikały przy każdym odświeżeniu.
+    if (state.incoming) takeoverIncoming($('#dash-offers'), state.incoming);
+    api('GET', '/api/takeovers').then((t) => { state.incoming = t.incoming; const box = $('#dash-offers'); if (box) takeoverIncoming(box, t.incoming); });
+  }
   api('GET', '/api/news').then((rows) => {
     const n = $('#news');
     if (n) n.innerHTML = rows.map((r) => `<li><span class="muted">${gameDate(r.day)}:</span> ${esc(r.text)}</li>`).join('') || '<li class="muted">Cisza w eterze.</li>';
@@ -335,15 +341,18 @@ function routesTab(el) {
   const showMarket = async () => {
     const o = $('#r-origin').value, d = $('#r-dest').value;
     if (!o || o === d) { $('#r-market').textContent = ''; return; }
+    const req = (state.marketReq = (state.marketReq || 0) + 1);
     try {
       const m = await api('GET', `/api/market?origin=${o}&dest=${d}`);
+      // Gracz zdążył wybrać inny kierunek albo zmienić zakładkę.
+      if (req !== state.marketReq || !$("#r-market")) return;
       for (const [c] of CLS) $(`#r-price-${c}`).placeholder = m.classes[c].fare;
       const slotNote = [o, d].filter((c) => airport(c).size >= state.st.rules.slotMinSize)
         .map((c) => `<br><span class="warn">${esc(airport(c).city)} (${c}) ma limit slotów: przed przypisaniem samolotu kup sloty (tabela niżej).</span>`).join('');
       $('#r-market').innerHTML = `Dystans ${m.distance.toLocaleString('pl-PL')} km · popyt dziennie w każdą stronę:
         ekonomiczna ${m.classes.y.demand} os. ($${m.classes.y.fare}), biznes ${m.classes.j.demand} os. ($${m.classes.j.fare}), pierwsza ${m.classes.f.demand} os. ($${m.classes.f.fare}).
         ${m.competitors.length ? `<br>Konkurencja: ${m.competitors.map((c) => `${esc(c.name)} ($${c.prices.y} / $${c.prices.j} / $${c.prices.f}, ${c.seats} miejsc/dzień)`).join(', ')}` : '<br>Brak konkurencji na tej trasie.'}${slotNote}`;
-    } catch (e) { $('#r-market').textContent = e.message; }
+    } catch (e) { if ($('#r-market')) $('#r-market').textContent = e.message; }
   };
   const fillCities = () => {
     state.routeCountry = $('#r-country').value;
@@ -792,8 +801,9 @@ function airlineTab(el) {
 }
 
 async function ranking(el) {
-  el.innerHTML = '<div class="card muted">Ładowanie…</div>';
-  const [rows, alliances, season] = await Promise.all([api('GET', '/api/leaderboard'), api('GET', '/api/alliances'), api('GET', '/api/season')]);
+  if (!el.innerHTML) el.innerHTML = '<div class="card muted">Ładowanie…</div>';
+  const [rows, alliances, season, takeovers] = await Promise.all([api('GET', '/api/leaderboard'), api('GET', '/api/alliances'), api('GET', '/api/season'), api('GET', '/api/takeovers')]);
+  if (!el.isConnected || state.tab !== 'ranking') return;
   const mine = state.data.airline.code;
   const realLeft = (sec) => {
     if (sec == null) return '';
@@ -820,15 +830,16 @@ async function ranking(el) {
     <tr><th>#</th><th>Sojusz</th><th>Członkowie</th><th>Łączna wartość</th></tr>
     ${alliances.map((a, i) => `<tr><td>${i + 1}</td><td>${esc(a.name)}</td><td>${a.members.map((m) => esc(m.code)).join(', ')}</td><td><b>${usd(a.value)}</b></td></tr>`).join('')}
   </table></div></div>` : ''}
-  <div class="card" id="takeovers"><h3>Fuzje i przejęcia</h3><p class="muted">Ładowanie…</p></div>`;
-  takeoversCard($('#takeovers'));
+  <div class="card" id="takeovers"></div>`;
+  takeoversCard($('#takeovers'), takeovers);
 }
 
 // Oferty przejęcia, które dostała moja linia.
 function takeoverIncoming(box, list) {
   box.innerHTML = `<h3>Oferty przejęcia Twojej linii</h3>
     <p class="muted">Gdy przyjmiesz ofertę, kupujący przejmie całą linię (flotę, trasy, bazy, sloty, gotówkę i długi).
-      Cena trafi do Ciebie jako dodatkowy kapitał na start nowej linii w tym sezonie.</p>
+      Cena trafi do Ciebie jako kapitał na start nowej linii w tym sezonie (zamiast standardowych ${usd(state.st.rules.startingCash)}).
+      Jeśli wartość Twojej linii spadnie o ponad 10% od złożenia oferty, oferta wygaśnie.</p>
     ${list.length ? `<div class="table-wrap"><table><tr><th>Kupujący</th><th class="num">Cena</th><th>Ważna do</th><th></th></tr>
       ${list.map((o) => `<tr><td>${esc(o.name)} (${esc(o.code)})</td><td class="num"><b>${usd(o.price)}</b></td><td>${gameDate(o.expires)}</td>
         <td class="nowrap"><button data-accept="${o.id}">Sprzedaj linię</button> <button class="secondary" data-reject="${o.id}">Odrzuć</button></td></tr>`).join('')}
@@ -838,9 +849,7 @@ function takeoverIncoming(box, list) {
   box.querySelectorAll('[data-reject]').forEach((b) => (b.onclick = () => act(() => api('POST', `/api/takeovers/${b.dataset.reject}/reject`), 'Oferta odrzucona')));
 }
 
-async function takeoversCard(box) {
-  const t = await api('GET', '/api/takeovers').catch((e) => (box.innerHTML = `<p class="neg">${esc(e.message)}</p>`, null));
-  if (!t || !box.isConnected) return;
+function takeoversCard(box, t) {
   const cash = state.data.airline.cash;
   box.innerHTML = `<h3>Fuzje i przejęcia</h3>
     <p class="muted">Możesz odkupić inną linię razem z jej flotą, trasami, bazami i slotami. Przejmujesz też jej gotówkę i długi,
@@ -901,9 +910,12 @@ async function airportStats(code) {
   const box = $('#ap-stats');
   box.hidden = false;
   box.innerHTML = '<p class="muted">Ładowanie…</p>';
+  const req = (airportStats.req = (airportStats.req || 0) + 1);
   let s;
-  try { s = await api('GET', `/api/airport/${code}`); } catch (e) { box.innerHTML = `<p class="neg">${esc(e.message)}</p>`; return; }
-  if (!box.isConnected) return;
+  try { s = await api('GET', `/api/airport/${code}`); } catch (e) { s = { error: e.message }; }
+  // Gracz zdążył kliknąć inne lotnisko albo zmienić zakładkę: ta odpowiedź jest już nieaktualna.
+  if (req !== airportStats.req || !box.isConnected) return;
+  if (s.error) { box.innerHTML = `<p class="neg">${esc(s.error)}</p>`; return; }
   const a = s.airport, n = (x) => x.toLocaleString('pl-PL');
   const lf = (pax, seats) => (seats ? pct(pax / seats) : '—');
   const city = (c) => `${esc(airport(c).city)} (${c})`;

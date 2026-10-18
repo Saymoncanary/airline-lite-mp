@@ -60,23 +60,32 @@ function adjustPrices(db, al) {
   }
 }
 
-// Trasy, które od tygodnia przynoszą stratę na lotach, są zamykane.
+// Trasy, które od tygodnia przynoszą stratę na lotach, są zamykane, a bot przez 60 dni do nich nie wraca.
+// Jeden słabszy dzień (strajk, awaria, gorszy sezon) nie wystarcza.
 function dropBadRoutes(db, al, day) {
-  for (const r of db.prepare('SELECT * FROM routes WHERE airline_id = ? AND created_day < ?').all(al.id, day - 7)) {
-    if (r.last_seats > 0 && r.last_revenue < r.last_cost * 0.9) db.prepare('DELETE FROM routes WHERE id = ?').run(r.id);
+  for (const r of db.prepare('SELECT * FROM routes WHERE airline_id = ? AND last_seats > 0').all(al.id)) {
+    const loss = r.last_revenue < r.last_cost * 0.9 ? r.loss_days + 1 : 0;
+    if (loss >= 7 && r.created_day < day - 7) {
+      db.prepare('DELETE FROM routes WHERE id = ?').run(r.id);
+      const other = r.origin === al.hub ? r.dest : r.origin;
+      db.prepare('INSERT OR REPLACE INTO bot_avoid(airline_id, airport, until_day) VALUES (?, ?, ?)').run(al.id, other, day + 60);
+    } else if (loss !== r.loss_days) {
+      db.prepare('UPDATE routes SET loss_days = ? WHERE id = ?').run(loss, r.id);
+    }
   }
 }
 
 // Najlepsze jeszcze nieobsługiwane kierunki z bazy: duży popyt, mało konkurencji, bez limitu slotów.
 function destinations(db, al, maxRange) {
   const mine = new Set(db.prepare('SELECT origin, dest FROM routes WHERE airline_id = ?').all(al.id).map((r) => pairKey(r.origin, r.dest)));
+  const avoid = new Set(db.prepare('SELECT airport FROM bot_avoid WHERE airline_id = ? AND until_day > (SELECT day FROM game_state WHERE id = 1)').all(al.id).map((r) => r.airport));
   const rivals = new Map();
   for (const r of db.prepare('SELECT origin, dest FROM routes WHERE airline_id != ?').all(al.id)) {
     const k = pairKey(r.origin, r.dest);
     rivals.set(k, (rivals.get(k) || 0) + 1);
   }
   return Object.values(AIRPORTS)
-    .filter((a) => a.code !== al.hub && !isSlotAirport(a.code) && !mine.has(pairKey(al.hub, a.code)))
+    .filter((a) => a.code !== al.hub && !isSlotAirport(a.code) && !avoid.has(a.code) && !mine.has(pairKey(al.hub, a.code)))
     .map((a) => {
       const dist = distanceKm(al.hub, a.code);
       return { code: a.code, dist, score: (dailyDemand(al.hub, a.code) * classFare('y', dist)) / (1 + (rivals.get(pairKey(al.hub, a.code)) || 0)) };

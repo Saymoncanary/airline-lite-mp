@@ -567,6 +567,9 @@ export function runTick(db, rng = Math.random, { seasonDays } = {}) {
       const t = AIRCRAFT_TYPES[ac.type_id];
       const al = airlines.get(ac.airline_id);
       const inMaint = ac.maintenance_until >= day;
+      // Koszty stałe i leasing płaci się każdego dnia, także w dniu rozpoczęcia przeglądu.
+      al.parts.fixed += t.dailyFixed * (1 + (100 - ac.condition) / 200);
+      if (ac.leased) al.parts.lease += leaseDaily(t);
       if (!inMaint && al.auto_maint > 0 && ac.condition < al.auto_maint) {
         al.parts.maint += maintenanceCost(t, ac.condition);
         startMaint.run(day + RULES.maintenanceDays - 1, ac.id);
@@ -574,8 +577,6 @@ export function runTick(db, rng = Math.random, { seasonDays } = {}) {
         al.condN++;
         continue;
       }
-      al.parts.fixed += t.dailyFixed * (1 + (100 - ac.condition) / 200);
-      if (ac.leased) al.parts.lease += leaseDaily(t);
       al.condSum += ac.condition;
       al.condN++;
       const legs = (flights.get(ac.id) || []).map((f) => [routes.get(f.route_id), f.round_trips]).filter(([r]) => r);

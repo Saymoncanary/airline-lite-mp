@@ -189,6 +189,16 @@ export function openDb(file) {
       UNIQUE (buyer_id, target_id)
     );
   `);
+  // Boty: ile dni z rzędu trasa przynosi stratę i kierunki, do których bot na razie nie wraca.
+  addColumn('routes', 'loss_days', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bot_avoid (
+      airline_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,
+      airport TEXT NOT NULL,
+      until_day INTEGER NOT NULL,
+      PRIMARY KEY (airline_id, airport)
+    );
+  `);
   // Dziennik operacji gotówkowych poza codziennym wynikiem (zakupy, sprzedaż, kredyty...).
   db.exec(`
     CREATE TABLE IF NOT EXISTS ledger (
