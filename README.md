@@ -65,6 +65,13 @@ Zmienne środowiskowe:
   kapitał na start nowej linii w tym sezonie (zamiast standardowych $200 mln).
 - **Statystyki lotniska**: kliknięcie lotniska na mapie pokazuje linie i trasy, które z niego latają, obłożenie, sloty,
   popyt z Twoich baz i kierunki z największym popytem (z przyciskiem otwarcia trasy).
+- **Raport dnia** na Pulpicie: dostawy, awarie i przeglądy, strajki, nowi konkurenci na Twoich trasach, trasy, które
+  przeszły na stratę lub wróciły do zysku, osiągnięcia, oferty przejęcia i propozycje codeshare.
+- **Terminale w bazach** (Finanse → Bazy i terminale): do 3 poziomów; każdy daje +30% pasażerów z przesiadką w tym hubie,
+  +4% atrakcyjności tras z bazy i 10 slotów na zatłoczonych lotniskach (pula slotów rośnie). Utrzymanie dzienne.
+- **Umowy codeshare** (zakładka Sojusz) z liniami spoza sojuszu, do 5 umów: premia +15% na trasach do baz partnera i
+  przesiadki między lotami obu linii na wspólnych lotniskach (także w sojuszu). Boty zgadzają się od razu.
+- **Wykup z leasingu**: leasingowany samolot można wykupić (cena nowego minus zużycie i wpłata leasingowa).
 - **Kredyt** do $300 mln (6% rocznie). Nowe **bazy** kosztują 2 mln × wielkość lotniska.
 - **Ranking** linii według wartości firmy (gotówka + wartość własnych samolotów − dług) oraz ranking sojuszy.
 

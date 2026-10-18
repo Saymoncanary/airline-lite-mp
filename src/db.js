@@ -204,6 +204,27 @@ export function openDb(file) {
   addColumn('aircraft', 'last_cost', 'REAL NOT NULL DEFAULT 0');
   addColumn('aircraft', 'last_pax', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('aircraft', 'total_profit', 'REAL NOT NULL DEFAULT 0');
+  // Raport dnia, terminale w bazach i umowy codeshare między liniami.
+  addColumn('bases', 'terminal', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('routes', 'last_rivals', 'TEXT');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS reports (
+      id INTEGER PRIMARY KEY,
+      airline_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,
+      day INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      text TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS reports_airline ON reports(airline_id, day);
+    CREATE TABLE IF NOT EXISTS codeshares (
+      id INTEGER PRIMARY KEY,
+      a_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,
+      b_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,
+      status TEXT NOT NULL,
+      day INTEGER NOT NULL,
+      UNIQUE (a_id, b_id)
+    );
+  `);
   // Dziennik operacji gotówkowych poza codziennym wynikiem (zakupy, sprzedaż, kredyty...).
   db.exec(`
     CREATE TABLE IF NOT EXISTS ledger (

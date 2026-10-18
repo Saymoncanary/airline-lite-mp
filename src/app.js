@@ -6,7 +6,7 @@ import { AIRPORTS, AIRCRAFT_TYPES } from './data.js';
 import {
   RULES, CLASSES, MONTHS, LIVERY_LOGOS, ACHIEVEMENTS, achievementStats, isSlotAirport, slotCapacity, slotPrice, slotUsage, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, roundTripHours, leaseDaily, aircraftValue,
   seatMap, validSeatConfig, maintenanceCost, routePrices, seasonMult, gameMonth, activeEvents,
-  pairKey, tx, currentDay, addNews, companyValue, takeoverPrice, mergeAirlines,
+  pairKey, tx, currentDay, addNews, companyValue, takeoverPrice, mergeAirlines, report, buyoutPrice,
 } from './game.js';
 import {
   hashPassword, verifyPassword, createSession, userFromToken, destroySession,
@@ -145,7 +145,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
         db.prepare('UPDATE users SET bonus_cash = 0 WHERE id = ?').run(ctx.user.id);
       }
       if (isSlotAirport(hub)) {
-        const free = Math.min(RULES.hubFreeSlots, slotCapacity(hub) - db.prepare('SELECT COALESCE(SUM(count), 0) AS n FROM slots WHERE airport = ?').get(hub).n);
+        const free = Math.min(RULES.hubFreeSlots, slotCapacity(hub, db) - db.prepare('SELECT COALESCE(SUM(count), 0) AS n FROM slots WHERE airport = ?').get(hub).n);
         if (free > 0) db.prepare('INSERT INTO slots(airline_id, airport, count) VALUES (?, ?, ?)').run(Number(lastInsertRowid), hub, free);
       }
       addNews(db, `Nowa linia ${name} (${code}) startuje! Baza: ${AIRPORTS[hub].city} (${hub}).`);
@@ -177,10 +177,10 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     const airline = requireAirline(ctx);
     const use = slotUsage(db, airline.id);
     return Object.values(AIRPORTS).filter((a) => isSlotAirport(a.code)).map((a) => {
-      const used = slotsUsed(a.code);
+      const used = slotsUsed(a.code), cap = slotCapacity(a.code, db);
       return {
-        code: a.code, city: a.city, country: a.country, capacity: slotCapacity(a.code), used, price: slotPrice(a.code, used),
-        sellPrice: Math.round(slotPrice(a.code, Math.max(0, used - 1)) * RULES.slotSellBack),
+        code: a.code, city: a.city, country: a.country, capacity: cap, used, price: slotPrice(a.code, used, cap),
+        sellPrice: Math.round(slotPrice(a.code, Math.max(0, used - 1), cap) * RULES.slotSellBack),
         mine: db.prepare('SELECT count FROM slots WHERE airline_id = ? AND airport = ?').get(airline.id, a.code)?.count || 0,
         myUse: use.get(a.code) || 0,
       };
@@ -197,14 +197,15 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       const mine = db.prepare('SELECT count FROM slots WHERE airline_id = ? AND airport = ?').get(airline.id, code)?.count || 0;
       let used = slotsUsed(code), total = 0;
       if (count > 0) {
-        if (used + count > slotCapacity(code)) fail(400, `Na ${code} zostało tylko ${slotCapacity(code) - used} wolnych slotów`);
-        for (let i = 0; i < count; i++) total += slotPrice(code, used++);
+        const cap = slotCapacity(code, db);
+        if (used + count > cap) fail(400, `Na ${code} zostało tylko ${cap - used} wolnych slotów`);
+        for (let i = 0; i < count; i++) total += slotPrice(code, used++, cap);
         spend(airline, total, `Zakup ${count} slotów: ${AIRPORTS[code].city} (${code})`);
       } else {
         const n = -count;
         if (n > mine) fail(400, 'Nie masz tylu slotów');
         if (mine - n < (slotUsage(db, airline.id).get(code) || 0)) fail(400, 'Te sloty są zajęte przez Twoje loty. Najpierw zmniejsz rotacje.');
-        for (let i = 0; i < n; i++) total += Math.round(slotPrice(code, --used) * RULES.slotSellBack);
+        for (let i = 0; i < n; i++) total += Math.round(slotPrice(code, --used, slotCapacity(code, db)) * RULES.slotSellBack);
         earn(airline.id, total, `Sprzedaż ${n} slotów: ${AIRPORTS[code].city} (${code})`);
       }
       db.prepare('INSERT INTO slots(airline_id, airport, count) VALUES (?, ?, ?) ON CONFLICT(airline_id, airport) DO UPDATE SET count = count + excluded.count')
@@ -271,7 +272,8 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       const t = AIRCRAFT_TYPES[a.type_id];
       return {
         ...a, value: a.leased ? 0 : aircraftValue(t, Math.max(0, day - a.acquired_day), a.condition),
-        flights: flightsOf.all(a.id), leaseDaily: a.leased ? leaseDaily(t) : 0, seatMap: seatMap(t, a.seats_j, a.seats_f), maintenanceCost: maintenanceCost(t, a.condition),
+        flights: flightsOf.all(a.id), leaseDaily: a.leased ? leaseDaily(t) : 0,
+        buyout: a.leased ? buyoutPrice(t, Math.max(0, day - a.acquired_day), a.condition) : 0, seatMap: seatMap(t, a.seats_j, a.seats_f), maintenanceCost: maintenanceCost(t, a.condition),
       };
     });
     const routes = db.prepare('SELECT * FROM routes WHERE airline_id = ? ORDER BY id').all(airline.id).map((r) => {
@@ -292,7 +294,10 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     const progress = achievementStats(db, airline, day, { profit: stats.at(-1) ? stats.at(-1).revenue - stats.at(-1).costs : 0 });
     const goals = ACHIEVEMENTS.map((g) => ({ key: g.key, progress: g.progress(progress) }));
     return { day, nextDayIn, airline: { ...airline, value: companyValue(db, airline, day) }, bases, fleet, routes, stats, world, alliance: myAlliance(airline.id), achievements, goals,
-      takeoverOffers: db.prepare('SELECT COUNT(*) AS n FROM takeover_offers WHERE target_id = ?').get(airline.id).n };
+      takeoverOffers: db.prepare('SELECT COUNT(*) AS n FROM takeover_offers WHERE target_id = ?').get(airline.id).n,
+      codeshareOffers: db.prepare("SELECT COUNT(*) AS n FROM codeshares WHERE b_id = ? AND status = 'pending'").get(airline.id).n,
+      terminals: Object.fromEntries(db.prepare('SELECT airport, terminal FROM bases WHERE airline_id = ?').all(airline.id).map((b) => [b.airport, b.terminal])),
+      reports: db.prepare('SELECT day, kind, text FROM reports WHERE airline_id = ? AND day >= ? ORDER BY id DESC LIMIT 60').all(airline.id, day - 2) };
   });
 
   on('POST', '/api/airline/settings', async (ctx) => {
@@ -379,6 +384,20 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     if (!validSeatConfig(t, j, f)) fail(400, `Za dużo foteli premium: biznes zajmuje ${RULES.classSpace.j}, a pierwsza ${RULES.classSpace.f} miejsca ekonomiczne (razem max ${t.seats})`);
     db.prepare('UPDATE aircraft SET seats_j = ?, seats_f = ? WHERE id = ?').run(j, f, ac.id);
     return { ok: true, seatMap: seatMap(t, j, f) };
+  });
+
+  // Wykup samolotu z leasingu: od tej chwili jest własny (bez rat, można go sprzedać i wystawić na rynek).
+  on('POST', '/api/aircraft/:id/buyout', async (ctx) => {
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      const ac = myAircraft(ctx, airline);
+      if (!ac.leased) fail(400, 'Ten samolot jest już Twój');
+      if (ac.delivery_day > currentDay(db)) fail(400, 'Ten samolot nie został jeszcze dostarczony');
+      const t = AIRCRAFT_TYPES[ac.type_id];
+      spend(airline, buyoutPrice(t, Math.max(0, currentDay(db) - ac.acquired_day), ac.condition), `Wykup z leasingu: ${t.name} #${ac.id}`);
+      db.prepare('UPDATE aircraft SET leased = 0 WHERE id = ?').run(ac.id);
+    });
+    return { ok: true };
   });
 
   on('POST', '/api/aircraft/:id/maintenance', async (ctx) => {
@@ -510,7 +529,8 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       .map(market).sort((x, y) => y.demand - x.demand).slice(0, 10);
     const slot = isSlotAirport(code) ? (() => {
       const used = slotsUsed(code);
-      return { capacity: slotCapacity(code), used, price: slotPrice(code, used), mine: db.prepare('SELECT count FROM slots WHERE airline_id = ? AND airport = ?').get(airline.id, code)?.count || 0 };
+      const cap = slotCapacity(code, db);
+      return { capacity: cap, used, price: slotPrice(code, used, cap), mine: db.prepare('SELECT count FROM slots WHERE airline_id = ? AND airport = ?').get(airline.id, code)?.count || 0 };
     })() : null;
     return {
       airport: AIRPORTS[code], isBase: bases.includes(code), slot,
@@ -574,6 +594,94 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       db.prepare('INSERT INTO bases(airline_id, airport) VALUES (?, ?)').run(airline.id, code);
       addNews(db, `${airline.name} otwiera nową bazę: ${AIRPORTS[code].city} (${code}).`);
     });
+    return { ok: true };
+  });
+
+  // Rozbudowa terminalu w bazie: więcej pasażerów z przesiadką, większa atrakcyjność tras i (na dużych lotniskach) sloty.
+  on('POST', '/api/bases/:code/terminal', async (ctx) => {
+    const code = airportOr400(ctx.params.code);
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      const b = db.prepare('SELECT * FROM bases WHERE airline_id = ? AND airport = ?').get(airline.id, code) || fail(404, 'Nie masz tu bazy');
+      if (b.terminal >= RULES.terminalMax) fail(400, 'Terminal jest już w pełni rozbudowany');
+      spend(airline, AIRPORTS[code].size * RULES.terminalCost[b.terminal], `Rozbudowa terminalu: ${AIRPORTS[code].city} (${code}), poziom ${b.terminal + 1}`);
+      db.prepare('UPDATE bases SET terminal = terminal + 1 WHERE airline_id = ? AND airport = ?').run(airline.id, code);
+      if (isSlotAirport(code)) {
+        db.prepare('INSERT INTO slots(airline_id, airport, count) VALUES (?, ?, ?) ON CONFLICT(airline_id, airport) DO UPDATE SET count = count + excluded.count')
+          .run(airline.id, code, RULES.terminalSlots);
+      }
+      addNews(db, `${airline.name} rozbudowuje terminal w ${AIRPORTS[code].city} (poziom ${b.terminal + 1}).`);
+    });
+    return { ok: true };
+  });
+
+  // --- Umowy codeshare między liniami ------------------------------------------
+  const csPartner = (c, me) => (c.a_id === me ? c.b_id : c.a_id);
+  const csActive = (id) => db.prepare("SELECT COUNT(*) AS n FROM codeshares WHERE (a_id = ? OR b_id = ?) AND status = 'active'").get(id, id).n;
+
+  on('GET', '/api/codeshares', (ctx) => {
+    const airline = requireAirline(ctx);
+    const info = (id) => {
+      const a = db.prepare('SELECT a.id, a.name, a.code, a.hub, a.color1, a.color2, a.logo, u.is_bot FROM airlines a JOIN users u ON u.id = a.user_id WHERE a.id = ?').get(id);
+      return { ...a, bot: !!a.is_bot, bases: db.prepare('SELECT airport FROM bases WHERE airline_id = ?').all(id).map((b) => b.airport) };
+    };
+    const rows = db.prepare('SELECT * FROM codeshares WHERE a_id = ? OR b_id = ?').all(airline.id, airline.id);
+    const linked = new Set(rows.map((c) => csPartner(c, airline.id)));
+    const ally = myAlliance(airline.id);
+    const allies = new Set(ally ? ally.members.map((m) => m.id) : []);
+    return {
+      active: rows.filter((c) => c.status === 'active').map((c) => ({ ...info(csPartner(c, airline.id)), airlineId: csPartner(c, airline.id), id: c.id, day: c.day })),
+      incoming: rows.filter((c) => c.status === 'pending' && c.b_id === airline.id).map((c) => ({ ...info(c.a_id), airlineId: c.a_id, id: c.id })),
+      outgoing: rows.filter((c) => c.status === 'pending' && c.a_id === airline.id).map((c) => ({ ...info(c.b_id), airlineId: c.b_id, id: c.id })),
+      candidates: db.prepare('SELECT id FROM airlines WHERE id != ? ORDER BY name').all(airline.id)
+        .filter((a) => !linked.has(a.id) && !allies.has(a.id)).map((a) => info(a.id)),
+      max: RULES.maxCodeshares,
+    };
+  });
+
+  // Linia komputerowa przyjmuje umowę od razu; gracz musi ją zaakceptować.
+  on('POST', '/api/codeshares', async (ctx) => {
+    const { airlineId } = await readJson(ctx.req);
+    return tx(db, () => {
+      const airline = requireAirline(ctx);
+      const other = db.prepare('SELECT a.*, u.is_bot FROM airlines a JOIN users u ON u.id = a.user_id WHERE a.id = ?').get(Number(airlineId)) || fail(404, 'Nie ma takiej linii');
+      if (other.id === airline.id) fail(400, 'Nie możesz zawrzeć umowy z samym sobą');
+      if (db.prepare('SELECT 1 FROM codeshares WHERE (a_id = ? AND b_id = ?) OR (a_id = ? AND b_id = ?)').get(airline.id, other.id, other.id, airline.id)) fail(409, 'Umowa z tą linią już istnieje lub czeka na odpowiedź');
+      if (csActive(airline.id) >= RULES.maxCodeshares) fail(400, `Możesz mieć najwyżej ${RULES.maxCodeshares} umów codeshare`);
+      const day = currentDay(db);
+      if (other.is_bot) {
+        if (csActive(other.id) >= RULES.maxCodeshares) fail(400, `${other.name} ma już komplet umów codeshare`);
+        db.prepare("INSERT INTO codeshares(a_id, b_id, status, day) VALUES (?, ?, 'active', ?)").run(airline.id, other.id, day);
+        addNews(db, `${airline.name} i ${other.name} podpisują umowę codeshare.`);
+        return { ok: true, active: true };
+      }
+      db.prepare("INSERT INTO codeshares(a_id, b_id, status, day) VALUES (?, ?, 'pending', ?)").run(airline.id, other.id, day);
+      report(db, other.id, day, 'codeshare', `${airline.name} proponuje umowę codeshare. Odpowiedz w zakładce „Sojusz”.`);
+      return { ok: true, active: false };
+    });
+  });
+
+  on('POST', '/api/codeshares/:id/accept', async (ctx) => {
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      const c = db.prepare("SELECT * FROM codeshares WHERE id = ? AND b_id = ? AND status = 'pending'").get(Number(ctx.params.id), airline.id) || fail(404, 'Nie ma takiej propozycji');
+      if (csActive(airline.id) >= RULES.maxCodeshares) fail(400, `Masz już ${RULES.maxCodeshares} umów codeshare`);
+      if (csActive(c.a_id) >= RULES.maxCodeshares) fail(400, 'Druga linia ma już komplet umów codeshare');
+      const day = currentDay(db);
+      db.prepare("UPDATE codeshares SET status = 'active', day = ? WHERE id = ?").run(day, c.id);
+      const other = db.prepare('SELECT name FROM airlines WHERE id = ?').get(c.a_id);
+      addNews(db, `${other.name} i ${airline.name} podpisują umowę codeshare.`);
+      report(db, c.a_id, day, 'codeshare', `${airline.name} przyjmuje Twoją propozycję codeshare.`);
+    });
+    return { ok: true };
+  });
+
+  // Odrzucenie propozycji, wycofanie własnej albo zerwanie aktywnej umowy.
+  on('DELETE', '/api/codeshares/:id', (ctx) => {
+    const airline = requireAirline(ctx);
+    const c = db.prepare('SELECT * FROM codeshares WHERE id = ? AND (a_id = ? OR b_id = ?)').get(Number(ctx.params.id), airline.id, airline.id) || fail(404, 'Nie ma takiej umowy');
+    db.prepare('DELETE FROM codeshares WHERE id = ?').run(c.id);
+    if (c.status === 'active') report(db, csPartner(c, airline.id), currentDay(db), 'codeshare', `${airline.name} zrywa umowę codeshare z Twoją linią.`);
     return { ok: true };
   });
 
@@ -744,6 +852,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       db.prepare('INSERT INTO takeover_offers(buyer_id, target_id, price, day) VALUES (?, ?, ?, ?) ON CONFLICT(buyer_id, target_id) DO UPDATE SET price = excluded.price, day = excluded.day')
         .run(airline.id, target.id, price, currentDay(db));
       addNews(db, `${airline.name} składa ofertę przejęcia linii ${target.name} za ${money(price)}.`);
+      report(db, target.id, currentDay(db), 'offer', `${airline.name} chce przejąć Twoją linię za ${money(price)}. Odpowiedz na Pulpicie.`);
       return { ok: true, merged: false };
     });
   });

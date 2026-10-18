@@ -268,6 +268,7 @@ function dashboard(el) {
   const seasonPct = Math.round((world.season - 1) * 100);
   const avgCond = fleet.length ? fleet.reduce((s, a) => s + a.condition, 0) / fleet.length : 100;
   el.innerHTML = `
+    ${dailyReport(state.data.reports, day)}
     <div class="card"><div class="grid">
       <div class="stat"><div class="k">Gotówka</div><div class="v">${usd(airline.cash)}</div></div>
       <div class="stat"><div class="k">Wartość firmy</div><div class="v">${usd(airline.value)}</div></div>
@@ -302,6 +303,18 @@ function dashboard(el) {
     const n = $('#news');
     if (n) n.innerHTML = rows.map((r) => `<li><span class="muted">${gameDate(r.day)}:</span> ${esc(r.text)}</li>`).join('') || '<li class="muted">Cisza w eterze.</li>';
   });
+}
+
+// Raport dnia: co wydarzyło się w linii w ostatnich dniach gry (najnowsze na górze).
+const REPORT_ICONS = { delivery: '🛬', maint: '🔧', breakdown: '⚠️', strike: '✊', rival: '⚔️', loss: '📉', gain: '📈', achievement: '🏆', offer: '💼', codeshare: '🤝' };
+function dailyReport(reports, day) {
+  const days = [...new Set(reports.map((r) => r.day))];
+  const label = (d) => (d === day ? 'Dziś' : d === day - 1 ? 'Wczoraj' : gameDate(d));
+  return `<div class="card report"><h3>Raport dnia</h3>
+    ${days.length ? days.map((d) => `<div class="report-day"><div class="muted">${label(d)}</div><ul>
+      ${reports.filter((r) => r.day === d).map((r) => `<li class="r-${r.kind}"><span>${REPORT_ICONS[r.kind] || '•'}</span> ${esc(r.text)}</li>`).join('')}</ul></div>`).join('')
+      : '<p class="muted">Spokojnie: w ostatnich dniach nic ważnego się nie wydarzyło.</p>'}
+  </div>`;
 }
 
 function routesTab(el) {
@@ -480,6 +493,7 @@ function fleet(el) {
           <td class="num nowrap">${profitCell(a, delivered)}</td>
           <td class="actions">
             <button class="secondary" data-maint="${a.id}" ${delivered && a.maintenance_until <= day && a.condition < 99 ? '' : 'disabled'} title="Przegląd trwa ${R.maintenanceDays} dni">Przegląd ${usd(a.maintenanceCost)}</button>
+            ${a.leased ? `<button class="secondary" data-buyout="${a.id}" ${delivered && airline.cash >= a.buyout ? '' : 'disabled'} title="Samolot stanie się Twój: koniec rat leasingu">Wykup ${usd(a.buyout)}</button>` : ''}
             ${a.leased ? '' : a.listing_id ? `<button class="secondary" data-unlist="${a.id}">Wycofaj ofertę</button>` : `<button class="secondary" data-list="${a.id}" ${delivered ? '' : 'disabled'}>Wystaw na rynek</button>`}
             <button class="danger" data-sell="${a.id}">${a.leased ? 'Zwróć' : 'Sprzedaj'}</button>
           </td>
@@ -510,6 +524,8 @@ function fleet(el) {
   }), 'Układ foteli zmieniony');
   el.querySelectorAll('[data-j]').forEach((i) => (i.onchange = () => config(i.dataset.j)));
   el.querySelectorAll('[data-f]').forEach((i) => (i.onchange = () => config(i.dataset.f)));
+  el.querySelectorAll('[data-buyout]').forEach((b) => (b.onclick = () => confirm(`Wykupić samolot za ${b.textContent.replace('Wykup ', '')}?`)
+    && act(() => api('POST', `/api/aircraft/${b.dataset.buyout}/buyout`), 'Samolot wykupiony. Jest już Twój!')));
   el.querySelectorAll('[data-maint]').forEach((b) => (b.onclick = () => act(() => api('POST', `/api/aircraft/${b.dataset.maint}/maintenance`), 'Samolot poszedł na przegląd')));
   el.querySelectorAll('[data-unlist]').forEach((b) => (b.onclick = () => act(() => api('POST', `/api/aircraft/${b.dataset.unlist}/unlist`), 'Oferta wycofana')));
   el.querySelectorAll('[data-list]').forEach((b) => (b.onclick = () => {
@@ -616,10 +632,10 @@ async function usedTab(el) {
 const INCOME_ROWS = [['rev_y', 'Klasa ekonomiczna'], ['rev_j', 'Klasa biznes'], ['rev_f', 'Pierwsza klasa']];
 const COST_ROWS = [['fuel', 'Paliwo'], ['ops', 'Obsługa techniczna'], ['staff', 'Pensje załóg'], ['fees', 'Opłaty lotniskowe'],
   ['fixed', 'Utrzymanie samolotów'], ['lease', 'Raty leasingu'], ['maint', 'Przeglądy i awarie'], ['service', 'Obsługa pokładowa'],
-  ['marketing', 'Reklama'], ['loyalty', 'Program lojalnościowy'], ['interest', 'Odsetki od kredytu']];
+  ['marketing', 'Reklama'], ['loyalty', 'Program lojalnościowy'], ['hubs', 'Terminale w hubach'], ['interest', 'Odsetki od kredytu']];
 const COST_COLORS = {
   fuel: '#f59e0b', ops: '#3fa9f5', staff: '#22d3ee', fees: '#a78bfa', fixed: '#64748b', lease: '#f472b6', maint: '#f06a6a',
-  service: '#84cc16', marketing: '#fb923c', loyalty: '#e879f9', interest: '#94a3b8',
+  service: '#84cc16', marketing: '#fb923c', loyalty: '#e879f9', hubs: '#2dd4bf', interest: '#94a3b8',
 };
 
 async function finance(el) {
@@ -704,8 +720,20 @@ async function finance(el) {
         <button class="secondary" id="repay">Spłać</button>
       </div>
     </div>
-    <div class="card"><h3>Bazy</h3>
-      <p>Twoje bazy: ${bases.map((b) => esc(apLabel(b))).join(', ')}. Trasy możesz otwierać tylko z baz.</p>
+    <div class="card"><h3>Bazy i terminale</h3>
+      <p class="muted">Trasy możesz otwierać tylko z baz. Rozbudowany terminal (do poziomu ${R.terminalMax}) na każdym poziomie daje
+        +${Math.round(R.terminalTransfer * 100)}% pasażerów z przesiadką w tym hubie i +${Math.round(R.terminalAppeal * 100)}% atrakcyjności tras z tej bazy,
+        a na zatłoczonych lotniskach także ${R.terminalSlots} nowych slotów. Utrzymanie kosztuje ${usd(R.terminalUpkeep)} × wielkość lotniska × poziom dziennie.</p>
+      <div class="table-wrap"><table>
+        <tr><th>Baza</th><th class="num">Rynek</th><th>Terminal</th><th class="num">Utrzymanie/dzień</th><th></th></tr>
+        ${bases.map((b) => {
+          const lv = state.data.terminals[b] || 0, size = airport(b).size, cost = lv < R.terminalMax ? size * R.terminalCost[lv] : 0;
+          return `<tr><td>${esc(apLabel(b))}</td><td class="num">${size}/10</td>
+            <td>${'■'.repeat(lv)}${'□'.repeat(R.terminalMax - lv)} <span class="muted">poziom ${lv}</span></td>
+            <td class="num">${lv ? usd(R.terminalUpkeep * size * lv) : '—'}</td>
+            <td>${lv < R.terminalMax ? `<button class="secondary" data-terminal="${b}" ${airline.cash < cost ? 'disabled title="Za mało gotówki"' : ''}>Rozbuduj (${usd(cost)})</button>` : '<span class="muted">pełna rozbudowa</span>'}</td></tr>`;
+        }).join('')}
+      </table></div>
       <div class="row">
         <label>Nowa baza<select id="base">${airportOptions({ filter: (a) => !bases.includes(a.code), label: (a) => `${esc(a.city)} (${a.code}) · ${usd(a.size * R.baseCostPerSize)}` })}</select></label>
         <button id="openbase">Otwórz bazę</button>
@@ -720,6 +748,45 @@ async function finance(el) {
   $('#borrow').onclick = () => act(() => api('POST', '/api/loan', { amount: amt() }), 'Kredyt przyznany');
   $('#repay').onclick = () => act(() => api('POST', '/api/loan', { amount: -amt() }), 'Spłacono');
   $('#openbase').onclick = () => act(() => api('POST', '/api/bases', { airport: $('#base').value }), 'Baza otwarta');
+  el.querySelectorAll('[data-terminal]').forEach((b) => (b.onclick = () => act(() => api('POST', `/api/bases/${b.dataset.terminal}/terminal`), 'Terminal rozbudowany')));
+}
+
+// Umowy codeshare z liniami spoza sojuszu: premia do atrakcyjności tras i wspólne przesiadki.
+async function codeshareCard(el) {
+  const box = document.createElement('div');
+  box.className = 'card';
+  box.id = 'codeshare';
+  box.innerHTML = '<h3>Umowy codeshare</h3><p class="muted">Ładowanie…</p>';
+  el.append(box);
+  const c = await api('GET', '/api/codeshares').catch(() => null);
+  if (!c || !box.isConnected) return;
+  const R = state.st.rules;
+  const line = (a) => `${badge(a)} ${esc(a.name)} (${esc(a.code)})${a.bot ? ' <span class="muted">🤖</span>' : ''}`;
+  const basesOf = (a) => `<span class="muted">${a.bases.map((b) => esc(apLabel(b))).join(', ')}</span>`;
+  box.innerHTML = `<h3>Umowy codeshare</h3>
+    <p class="muted">Umowa z linią spoza sojuszu działa jak współpraca w sojuszu: Twoje trasy do baz partnera są o
+      ${Math.round((R.codeshareBonus - 1) * 100)}% atrakcyjniejsze, a pasażerowie przesiadają się między Waszymi lotami na wspólnych lotniskach
+      (przychód dzieli się według długości odcinków). Możesz mieć do ${c.max} umów; linie komputerowe zgadzają się od razu.</p>
+    ${c.incoming.length ? `<h3>Propozycje dla Ciebie</h3><div class="table-wrap"><table>
+      ${c.incoming.map((x) => `<tr><td>${line(x)}</td><td>${basesOf(x)}</td><td class="nowrap"><button data-csaccept="${x.id}">Przyjmij</button> <button class="secondary" data-csdel="${x.id}">Odrzuć</button></td></tr>`).join('')}
+    </table></div>` : ''}
+    <div class="table-wrap"><table>
+      <tr><th>Partner</th><th>Bazy</th><th></th></tr>
+      ${c.active.map((x) => `<tr class="me"><td>${line(x)}</td><td>${basesOf(x)}</td><td><button class="danger" data-csdel="${x.id}" data-end="1">Zerwij</button></td></tr>`).join('')}
+      ${c.outgoing.map((x) => `<tr><td>${line(x)}</td><td>${basesOf(x)}</td><td class="nowrap"><span class="muted">czeka na odpowiedź</span> <button class="secondary" data-csdel="${x.id}">Wycofaj</button></td></tr>`).join('')}
+      ${c.active.length || c.outgoing.length ? '' : '<tr><td colspan="3" class="muted">Nie masz jeszcze umów codeshare.</td></tr>'}
+    </table></div>
+    ${c.candidates.length && c.active.length < c.max ? `<div class="row" style="margin-top:12px">
+      <label>Zaproponuj umowę<select id="cs-target">${c.candidates.map((x) => `<option value="${x.id}">${esc(x.name)} (${esc(x.code)})${x.bot ? ' · komputer' : ''} · baza ${esc(x.hub)}</option>`).join('')}</select></label>
+      <button id="cs-propose">Wyślij propozycję</button></div>` : ''}`;
+  box.querySelectorAll('[data-csaccept]').forEach((b) => (b.onclick = () => act(() => api('POST', `/api/codeshares/${b.dataset.csaccept}/accept`), 'Umowa codeshare podpisana')));
+  box.querySelectorAll('[data-csdel]').forEach((b) => (b.onclick = () => (!b.dataset.end || confirm('Zerwać umowę codeshare?'))
+    && act(() => api('DELETE', `/api/codeshares/${b.dataset.csdel}`), b.dataset.end ? 'Umowa zerwana' : 'Gotowe')));
+  const p = $('#cs-propose');
+  if (p) p.onclick = () => act(async () => {
+    const r = await api('POST', '/api/codeshares', { airlineId: Number($('#cs-target').value) });
+    toast(r.active ? 'Umowa codeshare podpisana!' : 'Propozycja wysłana. Druga linia musi ją przyjąć.');
+  });
 }
 
 async function allianceTab(el) {
@@ -742,6 +809,7 @@ async function allianceTab(el) {
       </div>`;
     el.querySelectorAll('[data-join]').forEach((b) => (b.onclick = () => act(() => api('POST', `/api/alliances/${b.dataset.join}/join`), 'Witamy w sojuszu!')));
     $('#al-create').onclick = () => act(() => api('POST', '/api/alliances', { name: $('#al-name').value }), 'Sojusz założony');
+    codeshareCard(el);
     return;
   }
   const leader = alliance.leader_id === airline.id;
@@ -774,6 +842,7 @@ async function allianceTab(el) {
   };
   loadChat();
   state.chatTimer = setInterval(loadChat, 4000);
+  codeshareCard(el);
   $('#chat-form').onsubmit = async (e) => {
     e.preventDefault();
     const input = $('#chat-text');

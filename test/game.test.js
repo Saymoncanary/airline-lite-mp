@@ -420,7 +420,7 @@ test('fuzje i przejęcia oraz statystyki lotniska', async () => {
 });
 
 test('odporność API na dziwne dane', async () => {
-  const { server, base } = await startServer();
+  const { db, server, base } = await startServer();
   const c = client(base);
   assert.equal((await c('POST', '/api/register', { username: ['bobby'], password: 'haslo1234' })).status, 400);
   const regs = await Promise.all([0, 1, 2].map(() => client(base)('POST', '/api/register', { username: 'tlok', password: 'haslo1234' })));
@@ -437,6 +437,16 @@ test('odporność API na dziwne dane', async () => {
   assert.equal(d.airline.cash, RULES.startingCash - 3 * AIRCRAFT_TYPES.ATR72.price);
   assert.equal((await c('POST', '/api/aircraft', { typeId: 'A359', mode: 'buy', count: 20 })).status, 400); // za mało pieniędzy
   assert.equal((await c('GET', '/api/airline')).data.fleet.length, 3);
+  // Wykup z leasingu: zaraz po dostawie kosztuje tyle, ile zakup minus wpłata leasingowa.
+  await c('POST', '/api/aircraft', { typeId: 'ATR72', mode: 'lease' });
+  let leased = (await c('GET', '/api/airline')).data.fleet.find((x) => x.leased);
+  assert.equal((await c('POST', `/api/aircraft/${leased.id}/buyout`)).status, 400); // jeszcze nie dostarczony
+  for (let i = 0; i < 6; i++) runTick(db, calm);
+  leased = (await c('GET', '/api/airline')).data.fleet.find((x) => x.leased);
+  assert.ok(leased.buyout > 0 && leased.buyout <= AIRCRAFT_TYPES.ATR72.price * (1 - RULES.leaseDepositPct));
+  assert.equal((await c('POST', `/api/aircraft/${leased.id}/buyout`)).status, 200);
+  assert.equal((await c('GET', '/api/airline')).data.fleet.filter((x) => x.leased).length, 0);
+  assert.equal((await c('POST', `/api/aircraft/${leased.id}/buyout`)).status, 400);
   assert.equal((await c('GET', '/api/airport/%E0')).status, 400);
   const bad = await fetch(base + '/api/me', { headers: { cookie: 'x=%zz' } });
   assert.equal(bad.status, 200);
@@ -460,6 +470,74 @@ test('przypisanie z dopasowaniem do wolnych slotów', async () => {
   const r = (await a('POST', `/api/aircraft/${ac}/assign`, { routeId: rid, roundTrips: max, fit: true })).data;
   assert.deepEqual([r.roundTrips, r.reduced], [2, true]);
   assert.equal((await a('GET', '/api/airline')).data.fleet[0].flights[0].round_trips, 2);
+  server.closeAllConnections();
+  server.close();
+});
+
+test('raport dnia, terminale i codeshare', async () => {
+  const { ensureBots } = await import('../src/bots.js');
+  const { tx } = await import('../src/game.js');
+  const { db, server, base } = await startServer();
+  const a = client(base), b = client(base);
+  await a('POST', '/api/register', { username: 'raport', password: 'haslo1234' });
+  await b('POST', '/api/register', { username: 'partner', password: 'haslo1234' });
+  await a('POST', '/api/airline', { name: 'Raport Air', code: 'RA', hub: 'WAW' });
+  await b('POST', '/api/airline', { name: 'Partner Jet', code: 'PJ', hub: 'BER' });
+  await a('POST', '/api/aircraft', { typeId: 'A320C', mode: 'buy' });
+  await b('POST', '/api/aircraft', { typeId: 'A320C', mode: 'buy', count: 2 });
+  for (let i = 0; i < 6; i++) runTick(db, calm);
+  // Raport: dostawa samolotu.
+  assert.ok((await a('GET', '/api/airline')).data.reports.some((r) => r.kind === 'delivery'));
+  const ra = (await a('POST', '/api/routes', { origin: 'WAW', dest: 'BER' })).data.id;
+  const rb = (await b('POST', '/api/routes', { origin: 'BER', dest: 'HAM' })).data.id;
+  await a('POST', `/api/aircraft/${(await a('GET', '/api/airline')).data.fleet[0].id}/assign`, { routeId: ra });
+  const bf = (await b('GET', '/api/airline')).data.fleet;
+  await b('POST', `/api/aircraft/${bf[0].id}/assign`, { routeId: rb });
+  runTick(db, calm);
+  const transfers = async () => (await a('GET', '/api/airline')).data.routes[0].detail.transfer;
+  assert.equal(await transfers(), 0); // bez umowy nie ma przesiadek między liniami
+
+  // Konkurent wchodzi na trasę: raport u Raport Air.
+  const rb2 = (await b('POST', '/api/routes', { origin: 'BER', dest: 'WAW' })).data.id;
+  await b('POST', `/api/aircraft/${bf[1].id}/assign`, { routeId: rb2 });
+  runTick(db, calm);
+  assert.ok((await a('GET', '/api/airline')).data.reports.some((r) => r.kind === 'rival' && r.text.includes('Partner Jet')));
+  await b('DELETE', `/api/routes/${rb2}`);
+
+  // Codeshare z graczem: propozycja, akceptacja, przesiadki między liniami.
+  const pjId = db.prepare("SELECT id FROM airlines WHERE code = 'PJ'").get().id;
+  assert.equal((await a('POST', '/api/codeshares', { airlineId: pjId })).data.active, false);
+  assert.equal((await a('POST', '/api/codeshares', { airlineId: pjId })).status, 409);
+  const inc = (await b('GET', '/api/codeshares')).data.incoming;
+  assert.equal(inc.length, 1);
+  assert.equal((await b('GET', '/api/airline')).data.codeshareOffers, 1);
+  assert.equal((await b('POST', `/api/codeshares/${inc[0].id}/accept`)).status, 200);
+  assert.equal((await a('GET', '/api/codeshares')).data.active[0].code, 'PJ');
+  runTick(db, calm);
+  assert.ok((await transfers()) > 0, 'przesiadki WAW–BER–HAM między partnerami');
+  // Linia komputerowa przyjmuje umowę od razu; zerwanie umowy.
+  tx(db, () => ensureBots(db, 1, 8));
+  const bot = db.prepare("SELECT id FROM airlines WHERE code = 'ES'").get().id;
+  assert.equal((await a('POST', '/api/codeshares', { airlineId: bot })).data.active, true);
+  const act = (await a('GET', '/api/codeshares')).data.active;
+  assert.equal(act.length, 2);
+  assert.equal((await a('DELETE', `/api/codeshares/${act.find((c) => c.code === 'ES').id}`)).status, 200);
+
+  // Terminal: koszt, utrzymanie, sloty na dużym lotnisku.
+  const cash0 = (await a('GET', '/api/airline')).data.airline.cash;
+  assert.equal((await a('POST', '/api/bases/WAW/terminal')).status, 200);
+  const d = (await a('GET', '/api/airline')).data;
+  assert.equal(d.terminals.WAW, 1);
+  assert.equal(cash0 - d.airline.cash, 7 * RULES.terminalCost[0]); // WAW ma wielkość 7
+  runTick(db, calm);
+  const fin = (await a('GET', '/api/finance')).data;
+  assert.ok(fin.days.at(-1).detail.hubs > 0);
+  assert.equal((await a('POST', '/api/bases/KRK/terminal')).status, 404);
+  await a('POST', '/api/bases', { airport: 'LHR' });
+  const capBefore = (await a('GET', '/api/slots')).data.find((x) => x.code === 'LHR').capacity;
+  await a('POST', '/api/bases/LHR/terminal');
+  const lhr = (await a('GET', '/api/slots')).data.find((x) => x.code === 'LHR');
+  assert.deepEqual([lhr.capacity - capBefore, lhr.mine], [RULES.terminalSlots, RULES.terminalSlots]);
   server.closeAllConnections();
   server.close();
 });
