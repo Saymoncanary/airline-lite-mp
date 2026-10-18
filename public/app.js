@@ -116,6 +116,8 @@ async function refresh(auto = false) {
     state.data = await api('GET', '/api/airline');
     state.nextDayAt = state.data.nextDayIn == null ? null : Date.now() + state.data.nextDayIn;
   } catch (e) {
+    // Nowy sezon usunął linię: wracamy do zakładania nowej.
+    if (/załóż linię/.test(e.message)) return location.reload();
     if (!auto) toast(e.message, true);
     return;
   }
@@ -787,9 +789,25 @@ function airlineTab(el) {
 
 async function ranking(el) {
   el.innerHTML = '<div class="card muted">Ładowanie…</div>';
-  const [rows, alliances] = await Promise.all([api('GET', '/api/leaderboard'), api('GET', '/api/alliances')]);
+  const [rows, alliances, season] = await Promise.all([api('GET', '/api/leaderboard'), api('GET', '/api/alliances'), api('GET', '/api/season')]);
   const mine = state.data.airline.code;
-  el.innerHTML = `<div class="card"><h3>Ranking linii lotniczych</h3><div class="table-wrap"><table>
+  const realLeft = (sec) => {
+    if (sec == null) return '';
+    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+    return d ? `${d} dni ${h} godz.` : h ? `${h} godz. ${m} min` : m ? `${m} min` : 'mniej niż minuta';
+  };
+  const seasons = [...new Set(season.hall.map((h) => h.season))];
+  const medal = ['🥇', '🥈', '🥉'];
+  el.innerHTML = `<div class="card"><h3>Sezon ${season.season}</h3>
+    <p>${season.daysLeft == null ? 'Sezon właśnie się zaczął.' : `Do końca sezonu: <b>${realLeft(season.secondsLeft)}</b> (${season.daysLeft.toLocaleString('pl-PL')} dni gry, koniec ${gameDate(season.endDay)}).`}
+      Wygrywa linia z najwyższą wartością firmy. Trzy najlepsze trafiają do galerii sław, a potem świat zaczyna się od nowa i każdy zakłada nową linię.</p>
+    ${seasons.length ? `<h3 style="margin-top:14px">Galeria sław</h3><div class="table-wrap"><table>
+      <tr><th>Sezon</th><th>Miejsce</th><th>Linia</th><th>Gracz</th><th class="num">Wartość firmy</th></tr>
+      ${season.hall.map((h) => `<tr><td>${h.season}</td><td>${medal[h.place - 1]} ${h.place}.</td><td>${esc(h.airline)} (${esc(h.code)})</td>
+        <td>${h.bot ? '<span class="muted">🤖 komputer</span>' : esc(h.owner)}</td><td class="num">${usd(h.value)}</td></tr>`).join('')}
+    </table></div>` : ''}
+  </div>
+  <div class="card"><h3>Ranking linii lotniczych</h3><div class="table-wrap"><table>
     <tr><th>#</th><th>Linia</th><th>Gracz</th><th>Sojusz</th><th>Hub</th><th>Wartość firmy</th><th>Flota</th><th>Trasy</th><th>Pasażerowie/dzień</th><th>Reputacja</th></tr>
     ${rows.map((r, i) => `<tr class="${r.code === mine ? 'me' : ''}"><td>${i + 1}</td><td>${badge(r)} ${esc(r.name)} (${esc(r.code)})</td><td>${r.bot ? '<span class="muted">🤖 komputer</span>' : esc(r.owner)}</td><td>${esc(r.alliance || '—')}</td><td>${r.hub}</td>
       <td><b>${usd(r.value)}</b></td><td>${r.fleet}</td><td>${r.routes}</td><td>${r.pax.toLocaleString('pl-PL')}</td><td>${r.reputation.toFixed(1)}</td></tr>`).join('')}

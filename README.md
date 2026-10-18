@@ -24,6 +24,8 @@ Zmienne środowiskowe:
 | `TICK_SECONDS` | `60` | ile sekund trwa jeden dzień gry |
 | `DB_FILE` | `./data/game.db` | plik bazy danych |
 | `COOKIE_SECURE` | – | ustaw `1`, gdy gra działa za HTTPS |
+| `BOTS` | `3` | ile linii komputerowych gra w świecie (0-6) |
+| `SEASON_DAYS` | `30` | długość sezonu w dniach rzeczywistych |
 
 ## Zasady gry
 
@@ -44,6 +46,17 @@ Zmienne środowiskowe:
 - **Konkurencja**: gdy kilka linii lata na tej samej trasie, pasażerowie każdej klasy wybierają według ceny,
   liczby miejsc i reputacji linii. Zbyt wysoka cena zmniejsza popyt.
 - **Sojusze**: do 8 linii, wspólny czat i premia codeshare (+15% atrakcyjności tras do baz partnerów).
+- **Przesiadki**: gdy linia lata z jednego lotniska do dwóch miast, część pasażerów między nimi leci z przesiadką
+  i zajmuje wolne miejsca ekonomiczne na obu odcinkach.
+- **Sloty**: 26 największych lotnisk ma wspólną dla wszystkich pulę slotów; każda rotacja dziennie potrzebuje slotu,
+  a cena rośnie z zapełnieniem. Baza na takim lotnisku dostaje 10 slotów na start.
+- **Linia** (osobna zakładka): malowanie i logo (widoczne na samolotach, mapie i w rankingu), pensje personelu
+  (za niskie = strajki), poziom obsługi pokładowej, program lojalnościowy, kampanie reklamowe w wybranych krajach
+  oraz 18 celów z nagrodami w gotówce.
+- **Komputerowi rywale**: linie sterowane przez grę (zmienna `BOTS`, domyślnie 3) kupują samoloty, otwierają trasy
+  i ustawiają ceny według obłożenia.
+- **Sezony**: po `SEASON_DAYS` dniach rzeczywistych (domyślnie 30) trzy najcenniejsze linie trafiają do galerii sław,
+  a świat zaczyna się od nowa. Konta graczy zostają.
 - **Kredyt** do $300 mln (6% rocznie). Nowe **bazy** kosztują 2 mln × wielkość lotniska.
 - **Ranking** linii według wartości firmy (gotówka + wartość własnych samolotów − dług) oraz ranking sojuszy.
 
@@ -53,7 +66,8 @@ Zmienne środowiskowe:
 server.js        start serwera i zegar gry
 src/app.js       API (JSON) i serwowanie plików
 src/auth.js      hasła (scrypt), sesje, limit prób logowania
-src/game.js      ekonomia i symulacja dnia
+src/game.js      ekonomia i symulacja dnia, sezony, osiągnięcia
+src/bots.js      komputerowi rywale
 src/data.js      typy samolotów i wczytanie lotnisk
 src/airports.json lotniska (współrzędne: OpenFlights)
 src/db.js        schemat bazy SQLite

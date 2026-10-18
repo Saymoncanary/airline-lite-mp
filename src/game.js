@@ -412,11 +412,31 @@ function refillUsedMarket(db, day, rng) {
   }
 }
 
+// Koniec sezonu: trzy najcenniejsze linie trafiają do galerii sław, a świat zaczyna się od nowa.
+// Konta graczy zostają, każdy zakłada nową linię.
+export function endSeason(db, day, seasonDays) {
+  const { season } = db.prepare('SELECT season FROM game_state WHERE id = 1').get();
+  const top = db.prepare('SELECT a.*, u.username, u.is_bot FROM airlines a JOIN users u ON u.id = a.user_id').all()
+    .map((a) => ({ ...a, value: companyValue(db, a, day) })).sort((x, y) => y.value - x.value).slice(0, 3);
+  top.forEach((a, i) => db.prepare('INSERT INTO hall_of_fame(season, place, airline, code, owner, bot, value, day) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(season, i + 1, a.name, a.code, a.username, a.is_bot, a.value, day));
+  db.exec(`
+    DELETE FROM used_listings WHERE aircraft_id IS NOT NULL;
+    DELETE FROM alliances;
+    DELETE FROM airlines;
+  `);
+  db.prepare('UPDATE game_state SET season = ?, season_end_day = ? WHERE id = 1').run(season + 1, day + seasonDays);
+  db.prepare('INSERT INTO news(day, text) VALUES (?, ?)').run(day, top.length
+    ? `Koniec sezonu ${season}! Wygrywa ${top[0].name} (${top[0].username}) z wartością firmy $${(top[0].value / 1e6).toFixed(1)} mln. Rusza sezon ${season + 1}.`
+    : `Koniec sezonu ${season}. Rusza sezon ${season + 1}.`);
+}
+
 function gaussian(rng) {
   return Math.sqrt(-2 * Math.log(1 - rng())) * Math.cos(2 * Math.PI * rng());
 }
 
-export function runTick(db, rng = Math.random) {
+// seasonDays: długość sezonu w dniach gry (bez tej opcji sezony się nie kończą).
+export function runTick(db, rng = Math.random, { seasonDays } = {}) {
   return tx(db, () => {
     const state = db.prepare('SELECT * FROM game_state WHERE id = 1').get();
     const day = state.day + 1;
@@ -610,6 +630,10 @@ export function runTick(db, rng = Math.random) {
     db.prepare('DELETE FROM daily_stats WHERE day < ?').run(day - 60);
     db.prepare('DELETE FROM news WHERE id NOT IN (SELECT id FROM news ORDER BY id DESC LIMIT 200)').run();
     db.prepare('UPDATE game_state SET day = ?, fuel = ? WHERE id = 1').run(day, fuel);
+    if (seasonDays) {
+      if (state.season_end_day == null) db.prepare('UPDATE game_state SET season_end_day = ? WHERE id = 1').run(day + seasonDays);
+      else if (day >= state.season_end_day) endSeason(db, day, seasonDays);
+    }
     return day;
   });
 }

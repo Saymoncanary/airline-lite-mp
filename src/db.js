@@ -134,6 +134,21 @@ export function openDb(file) {
   addColumn('airlines', 'color1', "TEXT NOT NULL DEFAULT '#1d4ed8'");
   addColumn('airlines', 'color2', "TEXT NOT NULL DEFAULT '#dc2626'");
   addColumn('airlines', 'logo', "TEXT NOT NULL DEFAULT '★'");
+  addColumn('game_state', 'season', 'INTEGER NOT NULL DEFAULT 1');
+  addColumn('game_state', 'season_end_day', 'INTEGER');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hall_of_fame (
+      season INTEGER NOT NULL,
+      place INTEGER NOT NULL,
+      airline TEXT NOT NULL,
+      code TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      bot INTEGER NOT NULL,
+      value REAL NOT NULL,
+      day INTEGER NOT NULL,
+      PRIMARY KEY (season, place)
+    );
+  `);
   addColumn('users', 'is_bot', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('airlines', 'total_pax', 'REAL NOT NULL DEFAULT 0');
   addColumn('airlines', 'wage', 'INTEGER NOT NULL DEFAULT 100');

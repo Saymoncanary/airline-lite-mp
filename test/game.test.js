@@ -314,3 +314,26 @@ test('komputerowi rywale rozwijają swoje linie', async () => {
   // Na konto bota nie da się zalogować (pusty hash hasła).
   assert.equal(db.prepare("SELECT pass_hash FROM users WHERE username = 'bot-ES'").get().pass_hash, '');
 });
+
+test('koniec sezonu: galeria sław i nowy świat', async () => {
+  const { db, server, base } = await startServer();
+  const a = client(base), b = client(base);
+  await a('POST', '/api/register', { username: 'zosia', password: 'haslo1234' });
+  await b('POST', '/api/register', { username: 'kuba', password: 'haslo1234' });
+  await a('POST', '/api/airline', { name: 'Zosia Air', code: 'ZA', hub: 'WAW' });
+  await b('POST', '/api/airline', { name: 'Kuba Fly', code: 'KF', hub: 'KRK' });
+  await b('POST', '/api/loan', { amount: 50e6 }); // dług obniża wartość firmy
+  await a('POST', '/api/alliances', { name: 'Sezonowi' });
+  runTick(db, calm, { seasonDays: 3 });
+  assert.equal((await a('GET', '/api/season')).data.daysLeft, 3);
+  for (let i = 0; i < 3; i++) runTick(db, calm, { seasonDays: 3 });
+  const s = (await a('GET', '/api/season')).data;
+  assert.equal(s.season, 2);
+  assert.deepEqual(s.hall.map((h) => [h.place, h.code]), [[1, 'ZA'], [2, 'KF']]);
+  assert.equal((await a('GET', '/api/airline')).status, 400);
+  assert.equal((await a('GET', '/api/alliances')).data.length, 0);
+  assert.equal((await a('POST', '/api/airline', { name: 'Zosia Air 2', code: 'ZB', hub: 'WAW' })).status, 200);
+  assert.equal((await a('GET', '/api/airline')).data.airline.cash, 200e6);
+  server.closeAllConnections();
+  server.close();
+});

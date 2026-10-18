@@ -656,6 +656,15 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       .sort((x, y) => y.value - x.value);
   });
 
+  on('GET', '/api/season', () => {
+    const g = db.prepare('SELECT day, season, season_end_day FROM game_state WHERE id = 1').get();
+    const left = g.season_end_day == null ? null : Math.max(0, g.season_end_day - g.day);
+    return {
+      season: g.season, endDay: g.season_end_day, daysLeft: left, secondsLeft: left == null || !clock ? null : left * clock.tickSeconds,
+      hall: db.prepare('SELECT * FROM hall_of_fame ORDER BY season DESC, place').all(),
+    };
+  });
+
   on('GET', '/api/news', () => db.prepare('SELECT day, text FROM news ORDER BY id DESC LIMIT 30').all());
 
   on('GET', '/api/routes/all', () =>
@@ -700,7 +709,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
         user: userFromToken(db, token),
         params: Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(url.pathname.match(route.re)[i + 1])])),
       };
-      const isPublic = ['/api/register', '/api/login', '/api/me', '/api/static', '/api/leaderboard', '/api/news'].includes(url.pathname);
+      const isPublic = ['/api/register', '/api/login', '/api/me', '/api/static', '/api/leaderboard', '/api/news', '/api/season'].includes(url.pathname);
       if (!ctx.user && !isPublic) return send(401, { error: 'Zaloguj się' });
       send(200, await route.handler(ctx));
     } catch (e) {
