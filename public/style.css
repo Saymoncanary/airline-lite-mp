@@ -69,3 +69,4 @@ td.actions { display: flex; gap: 6px; flex-wrap: wrap; }
 }
 .flight { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 button.small { padding: 3px 8px; }
+.plane-cell { padding: 2px 4px; } svg.plane { width: 170px; height: 59px; display: block; }

@@ -435,7 +435,7 @@ function shop(el) {
   const list = state.st.aircraftTypes.filter((t) => (!f.cat || t.cat === f.cat) && (!f.maker || t.maker === f.maker));
   const cash = state.data.airline.cash;
   const row = (t) => `<tr>
-    <td><b>${esc(t.name)}</b><div class="muted">${esc(t.maker)}</div></td><td>${t.seats}</td><td>${t.rangeKm.toLocaleString('pl-PL')} km</td><td>${t.speed} km/h</td>
+    <td class="plane-cell">${planeSvg(t)}</td><td><b>${esc(t.name)}</b><div class="muted">${esc(t.maker)}</div></td><td>${t.seats}</td><td>${t.rangeKm.toLocaleString('pl-PL')} km</td><td>${t.speed} km/h</td>
     <td>$${t.costPerKm}</td><td>${usd(t.dailyFixed)}</td><td>${R.deliveryDays[t.cat]} dni</td><td>${usd(t.price)}</td>
     <td>${usd(t.price * R.leaseDepositPct)} na start<br><span class="muted">+ ${usd(t.price * R.leaseDailyPct)}/dzień</span></td>
     <td><button data-buy="${t.id}" ${cash < t.price ? 'disabled title="Za mało gotówki"' : ''}>Zamów</button> <button class="secondary" data-lease="${t.id}">Leasing</button></td>
@@ -450,11 +450,11 @@ function shop(el) {
       <p class="muted">${list.length} z ${state.st.aircraftTypes.length} typów · nowe samoloty przylatują po kilku dniach gry</p>
     </div>
     <div class="table-wrap"><table>
-      <tr><th>Model</th><th>Miejsca</th><th>Zasięg</th><th>Prędkość</th><th>Koszt/km</th><th>Koszt stały/dzień</th><th>Dostawa</th><th>Cena</th><th>Leasing</th><th></th></tr>
+      <tr><th></th><th>Model</th><th>Miejsca</th><th>Zasięg</th><th>Prędkość</th><th>Koszt/km</th><th>Koszt stały/dzień</th><th>Dostawa</th><th>Cena</th><th>Leasing</th><th></th></tr>
       ${CATEGORIES.map(([id, name]) => {
         const group = list.filter((t) => t.cat === id);
-        return group.length ? `<tr><th colspan="10" class="group">${name}</th></tr>${group.map(row).join('')}` : '';
-      }).join('') || '<tr><td colspan="10" class="muted">Ten producent nie ma samolotów w tej kategorii.</td></tr>'}
+        return group.length ? `<tr><th colspan="11" class="group">${name}</th></tr>${group.map(row).join('')}` : '';
+      }).join('') || '<tr><td colspan="11" class="muted">Ten producent nie ma samolotów w tej kategorii.</td></tr>'}
     </table></div></div>`;
   $('#f-cat').onchange = (e) => { f.cat = e.target.value; shop(el); };
   el.querySelectorAll('[data-maker]').forEach((b) => (b.onclick = () => { f.maker = b.dataset.maker; shop(el); }));
