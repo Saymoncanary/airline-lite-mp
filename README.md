@@ -57,6 +57,12 @@ Zmienne środowiskowe:
   i ustawiają ceny według obłożenia.
 - **Sezony**: po `SEASON_DAYS` dniach rzeczywistych (domyślnie 30) trzy najcenniejsze linie trafiają do galerii sław,
   a świat zaczyna się od nowa. Konta graczy zostają.
+- **Fuzje i przejęcia** (zakładka Ranking): inną linię można odkupić razem z flotą, trasami, bazami, slotami, gotówką
+  i długami za 130% wartości firmy plus $1 mln za trasę (min. $10 mln). Linię komputerową przejmuje się od razu
+  (wraca dopiero w nowym sezonie), gracz musi przyjąć ofertę w ciągu 7 dni gry; cena trafia do niego jako
+  dodatkowy kapitał na start nowej linii w tym sezonie.
+- **Statystyki lotniska**: kliknięcie lotniska na mapie pokazuje linie i trasy, które z niego latają, obłożenie, sloty,
+  popyt z Twoich baz i kierunki z największym popytem (z przyciskiem otwarcia trasy).
 - **Kredyt** do $300 mln (6% rocznie). Nowe **bazy** kosztują 2 mln × wielkość lotniska.
 - **Ranking** linii według wartości firmy (gotówka + wartość własnych samolotów − dług) oraz ranking sojuszy.
 

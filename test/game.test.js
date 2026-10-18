@@ -337,3 +337,79 @@ test('koniec sezonu: galeria sław i nowy świat', async () => {
   server.closeAllConnections();
   server.close();
 });
+
+test('fuzje i przejęcia oraz statystyki lotniska', async () => {
+  const { ensureBots } = await import('../src/bots.js');
+  const { tx, takeoverPrice } = await import('../src/game.js');
+  const { db, server, base } = await startServer();
+  const a = client(base), b = client(base), c = client(base);
+  for (const [cl, u] of [[a, 'ala'], [b, 'bolek'], [c, 'celina']]) await cl('POST', '/api/register', { username: u, password: 'haslo1234' });
+  await a('POST', '/api/airline', { name: 'Ala Air', code: 'AL', hub: 'WAW' });
+  await b('POST', '/api/airline', { name: 'Bolek Jet', code: 'BJ', hub: 'KRK' });
+  await c('POST', '/api/airline', { name: 'Celina Sky', code: 'CS', hub: 'GDN' });
+  await a('POST', '/api/aircraft', { typeId: 'A320', mode: 'buy' });
+  await b('POST', '/api/aircraft', { typeId: 'A320', mode: 'buy' });
+  for (let i = 0; i < 6; i++) runTick(db, calm);
+  const ra = (await a('POST', '/api/routes', { origin: 'WAW', dest: 'KRK' })).data.id;
+  const rb = (await b('POST', '/api/routes', { origin: 'KRK', dest: 'WAW' })).data.id;
+  const rb2 = (await b('POST', '/api/routes', { origin: 'KRK', dest: 'PRG' })).data.id;
+  const acA = (await a('GET', '/api/airline')).data.fleet[0].id, acB = (await b('GET', '/api/airline')).data.fleet[0].id;
+  await a('POST', `/api/aircraft/${acA}/assign`, { routeId: ra, roundTrips: 2 });
+  await b('POST', `/api/aircraft/${acB}/assign`, { routeId: rb, roundTrips: 2 });
+  await b('POST', `/api/aircraft/${acB}/assign`, { routeId: rb2, roundTrips: 1 });
+  await b('POST', '/api/alliances', { name: 'Południe' });
+  const alId = (await c('GET', '/api/alliances')).data[0].id;
+  assert.equal((await c('POST', `/api/alliances/${alId}/join`)).status, 200);
+  runTick(db, calm);
+
+  // Statystyki lotniska: trasy wszystkich linii i popyt z moich baz.
+  const ap = (await a('GET', '/api/airport/KRK')).data;
+  assert.equal(ap.airport.code, 'KRK');
+  assert.deepEqual(ap.airlines.map((x) => x.code).sort(), ['AL', 'BJ']);
+  assert.equal(ap.totals.routes, 3);
+  assert.deepEqual(ap.fromBases.map((x) => [x.code, x.mine, x.rivals]), [['WAW', true, 2]]);
+  assert.ok(ap.top.length === 10 && ap.top[0].demand > 0);
+  assert.equal((await a('GET', '/api/airport/XXX')).status, 400);
+  assert.ok((await a('GET', '/api/airport/LHR')).data.slot.capacity > 0);
+
+  // Oferta dla gracza: odrzucenie, potem akceptacja.
+  const bId = db.prepare("SELECT id FROM airlines WHERE code = 'BJ'").get().id;
+  assert.equal((await a('POST', '/api/takeovers', { airlineId: bId })).status, 400); // za mało pieniędzy
+  db.prepare("UPDATE airlines SET cash = 1e9 WHERE code = 'AL'").run();
+  assert.equal((await a('POST', '/api/takeovers', { airlineId: bId })).data.merged, false);
+  let inc = (await b('GET', '/api/takeovers')).data.incoming;
+  assert.equal(inc.length, 1);
+  assert.equal((await b('GET', '/api/airline')).data.takeoverOffers, 1);
+  assert.equal((await b('POST', `/api/takeovers/${inc[0].id}/reject`)).status, 200);
+  assert.equal((await a('GET', '/api/takeovers')).data.outgoing.length, 0);
+  await a('POST', '/api/takeovers', { airlineId: bId });
+  inc = (await b('GET', '/api/takeovers')).data.incoming;
+  const price = inc[0].price;
+  const bCash = db.prepare('SELECT cash FROM airlines WHERE id = ?').get(bId).cash;
+  assert.equal((await b('POST', `/api/takeovers/${inc[0].id}/accept`)).status, 200);
+  const d = (await a('GET', '/api/airline')).data;
+  assert.equal(d.fleet.length, 2);
+  assert.deepEqual(d.bases.sort(), ['KRK', 'WAW']);
+  assert.equal(d.routes.length, 2); // WAW–KRK połączone w jedną trasę
+  assert.deepEqual(d.fleet.find((x) => x.id === acB).flights.map((f) => f.route_id).sort(), [ra, rb2].sort());
+  assert.ok(Math.abs(d.airline.cash - (1e9 - price + bCash)) < 1);
+  const al = (await c('GET', '/api/alliances')).data[0];
+  assert.equal(al.members.length, 1);
+  assert.equal((await c('GET', '/api/airline')).data.alliance.leader_id, db.prepare("SELECT id FROM airlines WHERE code = 'CS'").get().id);
+  // Sprzedający zakłada nową linię z kapitałem powiększonym o cenę.
+  assert.equal((await b('GET', '/api/airline')).status, 400);
+  await b('POST', '/api/airline', { name: 'Bolek Jet 2', code: 'B2', hub: 'KRK' });
+  assert.equal((await b('GET', '/api/airline')).data.airline.cash, RULES.startingCash + price);
+
+  // Linia komputerowa: przejęcie od razu i bez powrotu do końca sezonu.
+  tx(db, () => ensureBots(db, 1, 7));
+  const bot = db.prepare("SELECT * FROM airlines WHERE code = 'ES'").get();
+  const botPrice = takeoverPrice(db, bot);
+  assert.equal((await a('POST', '/api/takeovers', { airlineId: bot.id })).data.merged, true);
+  assert.ok((await a('GET', '/api/airline')).data.bases.includes('MUC'));
+  tx(db, () => ensureBots(db, 1, 8));
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM airlines WHERE code = 'ES'").get().n, 0);
+  assert.ok(botPrice >= RULES.takeoverMin);
+  server.closeAllConnections();
+  server.close();
+});

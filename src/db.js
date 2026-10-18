@@ -176,6 +176,19 @@ export function openDb(file) {
       end_day INTEGER NOT NULL
     );
   `);
+  // Przejęcia: oferty kupna linii innego gracza; premia za sprzedaną linię; boty przejęte do końca sezonu.
+  addColumn('users', 'bonus_cash', 'REAL NOT NULL DEFAULT 0');
+  addColumn('users', 'retired', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS takeover_offers (
+      id INTEGER PRIMARY KEY,
+      buyer_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,
+      target_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,
+      price REAL NOT NULL,
+      day INTEGER NOT NULL,
+      UNIQUE (buyer_id, target_id)
+    );
+  `);
   // Dziennik operacji gotówkowych poza codziennym wynikiem (zakupy, sprzedaż, kredyty...).
   db.exec(`
     CREATE TABLE IF NOT EXISTS ledger (

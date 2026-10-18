@@ -197,7 +197,7 @@ function renderFound() {
   view().innerHTML = `
     <div class="card auth" style="max-width:480px">
       <h2>Załóż swoją linię lotniczą</h2>
-      <p class="muted">Na start dostajesz ${usd(state.st.rules.startingCash)}. Wybierz port macierzysty: duże lotnisko to duży popyt, ale i silna konkurencja.</p>
+      <p class="muted">Na start dostajesz ${usd(state.st.rules.startingCash)}${state.me.user.bonus > 0 ? ` plus <b>${usd(state.me.user.bonus)}</b> ze sprzedaży poprzedniej linii` : ''}. Wybierz port macierzysty: duże lotnisko to duży popyt, ale i silna konkurencja.</p>
       <form id="foundform">
         <label>Nazwa linii <input name="name" maxlength="40" required></label>
         <label>Kod (2 znaki) <input name="code" maxlength="2" required style="text-transform:uppercase"></label>
@@ -265,8 +265,10 @@ function dashboard(el) {
         return `<div title="Dzień ${s.day}: ${usd(p)}"><span class="${p >= 0 ? 'up' : 'down'}" style="height:${h}%"></span></div>`;
       }).join('')}</div>` : '<p class="muted">Brak danych. Wyniki pojawią się po pierwszym dniu gry.</p>'}
     </div>
+    ${state.data.takeoverOffers ? '<div class="card offer-alert" id="dash-offers"></div>' : ''}
     ${fleet.length === 0 ? '<div class="card"><b>Pierwsze kroki:</b> 1) zamów samolot w „Nowe samoloty” albo kup używany na „Rynku wtórnym”, 2) otwórz trasę ze swojej bazy w zakładce „Trasy”, 3) gdy samolot dotrze, przypisz go do trasy we „Flocie”.</div>' : ''}
     <div class="card"><h3>Wiadomości ze świata lotnictwa</h3><ul class="news" id="news"><li class="muted">Ładowanie…</li></ul></div>`;
+  if (state.data.takeoverOffers) api('GET', '/api/takeovers').then((t) => { const box = $('#dash-offers'); if (box) takeoverIncoming(box, t.incoming); });
   api('GET', '/api/news').then((rows) => {
     const n = $('#news');
     if (n) n.innerHTML = rows.map((r) => `<li><span class="muted">${gameDate(r.day)}:</span> ${esc(r.text)}</li>`).join('') || '<li class="muted">Cisza w eterze.</li>';
@@ -280,7 +282,7 @@ function routesTab(el) {
   el.innerHTML = `
     <div class="card"><h3>Otwórz nową trasę</h3>
       <div class="row">
-        <label>Skąd (baza)<select id="r-origin">${bases.map((b) => `<option value="${b}">${esc(apLabel(b))}</option>`).join('')}</select></label>
+        <label>Skąd (baza)<select id="r-origin">${bases.map((b) => `<option value="${b}" ${b === state.routeOrigin ? 'selected' : ''}>${esc(apLabel(b))}</option>`).join('')}</select></label>
         <label>Kontynent<select id="r-continent">${CONTINENTS.map((c) => `<option ${c === state.routeContinent ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
         <label>Kraj<select id="r-country"></select></label>
         <label>Miasto<select id="r-dest"></select></label>
@@ -346,7 +348,8 @@ function routesTab(el) {
   const fillCities = () => {
     state.routeCountry = $('#r-country').value;
     $('#r-dest').innerHTML = state.st.airports.filter((a) => a.country === state.routeCountry)
-      .map((a) => `<option value="${a.code}">${esc(a.city)} (${a.code}) · rynek ${a.size}/10</option>`).join('');
+      .map((a) => `<option value="${a.code}" ${a.code === state.routeDest ? 'selected' : ''}>${esc(a.city)} (${a.code}) · rynek ${a.size}/10</option>`).join('');
+    state.routeDest = null;
     showMarket();
   };
   const fillCountries = () => {
@@ -356,6 +359,7 @@ function routesTab(el) {
     $('#r-country').innerHTML = list.map((c) => `<option ${c === state.routeCountry ? 'selected' : ''}>${esc(c)}</option>`).join('');
     fillCities();
   };
+  state.routeOrigin = null;
   $('#r-continent').onchange = fillCountries;
   $('#r-country').onchange = fillCities;
   $('#r-origin').onchange = showMarket;
@@ -815,11 +819,59 @@ async function ranking(el) {
   ${alliances.length ? `<div class="card"><h3>Ranking sojuszy</h3><div class="table-wrap"><table>
     <tr><th>#</th><th>Sojusz</th><th>Członkowie</th><th>Łączna wartość</th></tr>
     ${alliances.map((a, i) => `<tr><td>${i + 1}</td><td>${esc(a.name)}</td><td>${a.members.map((m) => esc(m.code)).join(', ')}</td><td><b>${usd(a.value)}</b></td></tr>`).join('')}
-  </table></div></div>` : ''}`;
+  </table></div></div>` : ''}
+  <div class="card" id="takeovers"><h3>Fuzje i przejęcia</h3><p class="muted">Ładowanie…</p></div>`;
+  takeoversCard($('#takeovers'));
+}
+
+// Oferty przejęcia, które dostała moja linia.
+function takeoverIncoming(box, list) {
+  box.innerHTML = `<h3>Oferty przejęcia Twojej linii</h3>
+    <p class="muted">Gdy przyjmiesz ofertę, kupujący przejmie całą linię (flotę, trasy, bazy, sloty, gotówkę i długi).
+      Cena trafi do Ciebie jako dodatkowy kapitał na start nowej linii w tym sezonie.</p>
+    ${list.length ? `<div class="table-wrap"><table><tr><th>Kupujący</th><th class="num">Cena</th><th>Ważna do</th><th></th></tr>
+      ${list.map((o) => `<tr><td>${esc(o.name)} (${esc(o.code)})</td><td class="num"><b>${usd(o.price)}</b></td><td>${gameDate(o.expires)}</td>
+        <td class="nowrap"><button data-accept="${o.id}">Sprzedaj linię</button> <button class="secondary" data-reject="${o.id}">Odrzuć</button></td></tr>`).join('')}
+    </table></div>` : '<p class="muted">Brak ofert.</p>'}`;
+  box.querySelectorAll('[data-accept]').forEach((b) => (b.onclick = () => confirm('Na pewno sprzedać całą linię? Tego nie da się cofnąć.')
+    && act(() => api('POST', `/api/takeovers/${b.dataset.accept}/accept`), 'Linia sprzedana. Możesz założyć nową.')));
+  box.querySelectorAll('[data-reject]').forEach((b) => (b.onclick = () => act(() => api('POST', `/api/takeovers/${b.dataset.reject}/reject`), 'Oferta odrzucona')));
+}
+
+async function takeoversCard(box) {
+  const t = await api('GET', '/api/takeovers').catch((e) => (box.innerHTML = `<p class="neg">${esc(e.message)}</p>`, null));
+  if (!t || !box.isConnected) return;
+  const cash = state.data.airline.cash;
+  box.innerHTML = `<h3>Fuzje i przejęcia</h3>
+    <p class="muted">Możesz odkupić inną linię razem z jej flotą, trasami, bazami i slotami. Przejmujesz też jej gotówkę i długi,
+      dlatego cena to ${Math.round((state.st.rules.takeoverPremium - 1) * 100)}% ponad wartość firmy plus ${usd(state.st.rules.takeoverPerRoute)} za każdą trasę
+      (co najmniej ${usd(state.st.rules.takeoverMin)}). Linię komputerową kupujesz od razu, a gracz musi zaakceptować ofertę
+      w ciągu ${state.st.rules.takeoverOfferDays} dni gry. Trasy, na których już latasz, łączą się z Twoimi.</p>
+    <div class="table-wrap"><table>
+      <tr><th>Linia</th><th>Właściciel</th><th>Hub</th><th class="num">Flota</th><th class="num">Trasy</th><th class="num">Wartość firmy</th><th class="num">Cena przejęcia</th><th></th></tr>
+      ${t.targets.map((a) => `<tr><td>${badge(a)} ${esc(a.name)} (${esc(a.code)})</td><td>${a.bot ? '<span class="muted">🤖 komputer</span>' : esc(a.owner)}</td><td>${a.hub}</td>
+        <td class="num">${a.fleet}</td><td class="num">${a.routes}</td><td class="num">${usd(a.value)}</td><td class="num"><b>${usd(a.price)}</b></td>
+        <td class="nowrap">${a.offered ? '<span class="muted">oferta złożona</span>'
+          : `<button data-buy="${a.id}" data-bot="${a.bot ? 1 : ''}" data-name="${esc(a.name)}" data-price="${a.price}" ${cash >= a.price ? '' : `disabled title="Brakuje ${usd(a.price - cash)}"`}>${a.bot ? 'Przejmij' : 'Złóż ofertę'}</button>`}</td></tr>`).join('')
+        || '<tr><td colspan="8" class="muted">Nie ma innych linii.</td></tr>'}
+    </table></div>
+    ${t.outgoing.length ? `<h3 style="margin-top:14px">Twoje oferty</h3><div class="table-wrap"><table><tr><th>Linia</th><th class="num">Cena</th><th>Ważna do</th><th></th></tr>
+      ${t.outgoing.map((o) => `<tr><td>${esc(o.name)} (${esc(o.code)})</td><td class="num">${usd(o.price)}</td><td>${gameDate(o.expires)}</td>
+        <td class="nowrap"><button class="secondary" data-cancel="${o.id}">Wycofaj</button></td></tr>`).join('')}</table></div>` : ''}
+    <div id="to-incoming" style="margin-top:14px"></div>`;
+  if (t.incoming.length) takeoverIncoming($('#to-incoming'), t.incoming);
+  box.querySelectorAll('[data-buy]').forEach((b) => (b.onclick = () => {
+    const bot = !!b.dataset.bot;
+    if (!confirm(`${bot ? 'Przejąć' : 'Złożyć ofertę przejęcia linii'} ${b.dataset.name} za ${usd(Number(b.dataset.price))}?`)) return;
+    act(() => api('POST', '/api/takeovers', { airlineId: Number(b.dataset.buy) }), bot ? `${b.dataset.name} jest Twoja!` : 'Oferta wysłana. Właściciel ma 7 dni na odpowiedź.');
+  }));
+  box.querySelectorAll('[data-cancel]').forEach((b) => (b.onclick = () => act(() => api('DELETE', `/api/takeovers/${b.dataset.cancel}`), 'Oferta wycofana')));
 }
 
 async function mapTab(el) {
-  el.innerHTML = `<div class="card"><div id="map"></div><p class="muted">Każda linia ma trasy w swoim kolorze, Twoje są grubsze. Zielone punkty: Twoje bazy.</p></div>`;
+  el.innerHTML = `<div class="card"><div id="map"></div><p class="muted">Każda linia ma trasy w swoim kolorze, Twoje są grubsze. Zielone punkty: Twoje bazy.
+    <b>Kliknij lotnisko</b>, żeby zobaczyć jego popyt, konkurencję i Twoje połączenia.</p></div>
+    <div class="card" id="ap-stats" hidden></div>`;
   // Kontury lądów są w repozytorium, więc mapa nie zależy od zewnętrznych serwerów kafelków.
   const map = (state.map = L.map('map', { minZoom: 2, maxZoom: 7 }).setView([45, 15], 3));
   map.attributionControl.setPrefix('').addAttribution('Natural Earth');
@@ -836,11 +888,63 @@ async function mapTab(el) {
     L.polyline([[a.lat, a.lon], [b.lat, b.lon]], { color: r.color1 || '#6b7a99', weight: r.code === mine ? 3.5 : 1.5, opacity: r.code === mine ? 0.95 : 0.6 })
       .bindTooltip(`${r.code}: ${r.origin}–${r.dest}`).addTo(map);
   }
-  for (const ap of state.st.airports) {
-    const base = state.data.bases.includes(ap.code);
+  // Bazy rysujemy na końcu, żeby były na wierzchu i łatwo było je kliknąć.
+  const isBase = (ap) => state.data.bases.includes(ap.code);
+  for (const ap of [...state.st.airports].sort((x, y) => isBase(x) - isBase(y) || x.size - y.size)) {
+    const base = isBase(ap);
     L.circleMarker([ap.lat, ap.lon], { radius: base ? 6 : 1.5 + ap.size / 3, weight: 1, color: base ? '#3ecf8e' : '#93a3bf', fillOpacity: 0.8 })
-      .bindTooltip(`${ap.city} (${ap.code}) · rynek ${ap.size}/10`).addTo(map);
+      .bindTooltip(`${ap.city} (${ap.code}) · rynek ${ap.size}/10`).on('click', () => airportStats(ap.code)).addTo(map);
   }
+}
+
+async function airportStats(code) {
+  const box = $('#ap-stats');
+  box.hidden = false;
+  box.innerHTML = '<p class="muted">Ładowanie…</p>';
+  let s;
+  try { s = await api('GET', `/api/airport/${code}`); } catch (e) { box.innerHTML = `<p class="neg">${esc(e.message)}</p>`; return; }
+  if (!box.isConnected) return;
+  const a = s.airport, n = (x) => x.toLocaleString('pl-PL');
+  const lf = (pax, seats) => (seats ? pct(pax / seats) : '—');
+  const city = (c) => `${esc(airport(c).city)} (${c})`;
+  const mkt = (rows, withOpen) => `<div class="table-wrap"><table>
+    <tr><th>Kierunek</th><th class="num">Dystans</th><th class="num">Popyt/dzień</th><th class="num">Bilet ekon.</th><th class="num">Linie na trasie</th><th></th></tr>
+    ${rows.map((m) => `<tr class="${m.mine ? 'me' : ''}"><td>${city(m.code)}</td><td class="num">${n(m.distance)} km</td><td class="num">${n(m.demand)}</td>
+      <td class="num">$${m.fare}</td><td class="num">${m.rivals}</td>
+      <td>${m.mine ? '<span class="muted">latasz</span>' : withOpen(m) ? `<button class="secondary" data-open="${withOpen(m)}" data-to="${m.code === code ? '' : m.code}">Otwórz trasę</button>` : ''}</td></tr>`).join('')}
+  </table></div>`;
+  const bases = state.data.bases;
+  box.innerHTML = `<h3>${esc(a.city)} (${a.code}) <span class="muted">· ${esc(a.country)} · rynek ${a.size}/10${s.isBase ? ' · Twoja baza' : ''}</span></h3>
+    <div class="grid">
+      <div class="stat"><div class="k">Trasy (wszystkie linie)</div><div class="v">${s.totals.routes}</div></div>
+      <div class="stat"><div class="k">Pasażerowie/dzień</div><div class="v">${n(s.totals.pax)}</div></div>
+      <div class="stat"><div class="k">Obłożenie</div><div class="v">${lf(s.totals.pax, s.totals.seats)}</div></div>
+      <div class="stat"><div class="k">Linie</div><div class="v">${s.airlines.length}</div></div>
+      ${s.slot ? `<div class="stat"><div class="k">Sloty (zajęte / pula)</div><div class="v">${s.slot.used} / ${s.slot.capacity}</div></div>
+        <div class="stat"><div class="k">Twoje sloty · cena kolejnego</div><div class="v">${s.slot.mine} · ${s.slot.used < s.slot.capacity ? usd(s.slot.price) : 'brak'}</div></div>` : ''}
+    </div>
+    ${s.airlines.length ? `<h3 style="margin-top:14px">Konkurencja na lotnisku</h3><div class="table-wrap"><table>
+      <tr><th>Linia</th><th class="num">Trasy</th><th class="num">Pasażerowie/dzień</th><th class="num">Obłożenie</th><th class="num">Udział</th></tr>
+      ${s.airlines.map((x) => `<tr class="${x.mine ? 'me' : ''}"><td>${badge(x)} ${esc(x.name)} (${esc(x.code)})</td><td class="num">${x.routes}</td><td class="num">${n(x.pax)}</td>
+        <td class="num">${lf(x.pax, x.seats)}</td><td class="num">${s.totals.pax ? pct(x.pax / s.totals.pax) : '—'}</td></tr>`).join('')}
+    </table></div>
+    <h3 style="margin-top:14px">Trasy z tego lotniska</h3><div class="table-wrap"><table>
+      <tr><th>Linia</th><th>Dokąd</th><th class="num">Dystans</th><th class="num">Ceny (E / B / P)</th><th class="num">Pasażerowie/dzień</th><th class="num">Obłożenie</th></tr>
+      ${s.routes.map((r) => `<tr class="${r.mine ? 'me' : ''}"><td>${badge(r)} ${esc(r.code)}</td><td>${city(r.other)}</td><td class="num">${n(r.distance)} km</td>
+        <td class="num">$${r.prices.y} / $${r.prices.j} / $${r.prices.f}</td><td class="num">${n(r.pax)}</td><td class="num">${lf(r.pax, r.seats)}</td></tr>`).join('')}
+    </table></div>` : '<p class="muted">Żadna linia jeszcze tu nie lata.</p>'}
+    ${s.fromBases.length ? `<h3 style="margin-top:14px">Popyt z Twoich baz</h3>${mkt(s.fromBases, (m) => m.code)}` : ''}
+    <h3 style="margin-top:14px">Kierunki z największym popytem</h3>
+    ${mkt(s.top, (m) => (s.isBase ? code : bases.includes(m.code) ? m.code : ''))}`;
+  // „Otwórz trasę” przenosi do formularza w zakładce Trasy z wybranym kierunkiem.
+  box.querySelectorAll('[data-open]').forEach((b) => (b.onclick = () => {
+    const origin = b.dataset.open, dest = origin === code ? b.dataset.to : code;
+    const d = airport(dest);
+    Object.assign(state, { routeOrigin: origin, routeDest: dest, routeContinent: continentOf(d), routeCountry: d.country, tab: 'routes' });
+    renderMain();
+    window.scrollTo(0, 0);
+  }));
+  box.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 boot().catch((e) => toast(e.message, true));

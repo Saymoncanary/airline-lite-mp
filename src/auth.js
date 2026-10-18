@@ -26,7 +26,7 @@ export function userFromToken(db, token) {
   if (!token) return null;
   return (
     db.prepare(
-      `SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id
+      `SELECT u.id, u.username, u.bonus_cash AS bonus FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token = ? AND s.expires_at > ?`
     ).get(token, Date.now()) || null
   );

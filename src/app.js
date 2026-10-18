@@ -6,7 +6,7 @@ import { AIRPORTS, AIRCRAFT_TYPES } from './data.js';
 import {
   RULES, CLASSES, MONTHS, LIVERY_LOGOS, ACHIEVEMENTS, achievementStats, isSlotAirport, slotCapacity, slotPrice, slotUsage, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, roundTripHours, leaseDaily, aircraftValue,
   seatMap, validSeatConfig, maintenanceCost, routePrices, seasonMult, gameMonth, activeEvents,
-  pairKey, tx, currentDay, addNews, companyValue,
+  pairKey, tx, currentDay, addNews, companyValue, takeoverPrice, mergeAirlines,
 } from './game.js';
 import {
   hashPassword, verifyPassword, createSession, userFromToken, destroySession,
@@ -129,6 +129,12 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       const { lastInsertRowid } = db.prepare('INSERT INTO airlines(user_id, name, code, hub, cash, founded_day, color1, color2) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(ctx.user.id, name, code, hub, RULES.startingCash, currentDay(db), c1, c2);
       db.prepare('INSERT INTO bases(airline_id, airport) VALUES (?, ?)').run(Number(lastInsertRowid), hub);
+      // Pieniądze ze sprzedaży poprzedniej linii powiększają kapitał startowy.
+      const { bonus_cash: bonus } = db.prepare('SELECT bonus_cash FROM users WHERE id = ?').get(ctx.user.id);
+      if (bonus > 0) {
+        earn(Number(lastInsertRowid), bonus, 'Kapitał ze sprzedaży poprzedniej linii');
+        db.prepare('UPDATE users SET bonus_cash = 0 WHERE id = ?').run(ctx.user.id);
+      }
       if (isSlotAirport(hub)) {
         const free = Math.min(RULES.hubFreeSlots, slotCapacity(hub) - db.prepare('SELECT COALESCE(SUM(count), 0) AS n FROM slots WHERE airport = ?').get(hub).n);
         if (free > 0) db.prepare('INSERT INTO slots(airline_id, airport, count) VALUES (?, ?, ?)').run(Number(lastInsertRowid), hub, free);
@@ -276,7 +282,8 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     const achievements = db.prepare('SELECT key, day FROM achievements WHERE airline_id = ?').all(airline.id);
     const progress = achievementStats(db, airline, day, { profit: stats.at(-1) ? stats.at(-1).revenue - stats.at(-1).costs : 0 });
     const goals = ACHIEVEMENTS.map((g) => ({ key: g.key, progress: g.progress(progress) }));
-    return { day, nextDayIn, airline: { ...airline, value: companyValue(db, airline, day) }, bases, fleet, routes, stats, world, alliance: myAlliance(airline.id), achievements, goals };
+    return { day, nextDayIn, airline: { ...airline, value: companyValue(db, airline, day) }, bases, fleet, routes, stats, world, alliance: myAlliance(airline.id), achievements, goals,
+      takeoverOffers: db.prepare('SELECT COUNT(*) AS n FROM takeover_offers WHERE target_id = ?').get(airline.id).n };
   });
 
   on('POST', '/api/airline/settings', async (ctx) => {
@@ -451,6 +458,46 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     return {
       distance: dist, baseFare: baseFare(dist), dailyDemand: demand, competitors,
       classes: Object.fromEntries(CLASSES.map((c) => [c, { fare: classFare(c, dist), demand: Math.round(demand * classShare(c, dist)) }])),
+    };
+  });
+
+  // Statystyki lotniska (kliknięcie na mapie): popyt, konkurencja i Twoje połączenia.
+  on('GET', '/api/airport/:code', (ctx) => {
+    const airline = requireAirline(ctx);
+    const code = airportOr400(ctx.params.code);
+    const season = seasonMult(currentDay(db));
+    const routes = db.prepare(
+      `SELECT r.*, al.name, al.code AS al_code, al.color1, al.color2, al.logo FROM routes r JOIN airlines al ON al.id = r.airline_id
+       WHERE r.origin = ? OR r.dest = ? ORDER BY r.last_pax DESC`
+    ).all(code, code).map((r) => ({
+      airline: r.name, code: r.al_code, color1: r.color1, color2: r.color2, logo: r.logo, mine: r.airline_id === airline.id,
+      other: r.origin === code ? r.dest : r.origin, distance: distanceKm(r.origin, r.dest), pax: r.last_pax, seats: r.last_seats, prices: routePrices(r),
+    }));
+    const airlines = new Map();
+    for (const r of routes) {
+      const x = airlines.get(r.code) || { name: r.airline, code: r.code, color1: r.color1, color2: r.color2, logo: r.logo, mine: r.mine, routes: 0, pax: 0, seats: 0 };
+      x.routes++; x.pax += r.pax; x.seats += r.seats;
+      airlines.set(r.code, x);
+    }
+    const flown = new Map();
+    for (const r of routes) flown.set(r.other, (flown.get(r.other) || 0) + 1);
+    const mineTo = new Set(routes.filter((r) => r.mine).map((r) => r.other));
+    const market = (other) => {
+      const dist = distanceKm(code, other);
+      return { code: other, distance: dist, demand: Math.round(dailyDemand(code, other) * season), fare: classFare('y', dist), rivals: flown.get(other) || 0, mine: mineTo.has(other) };
+    };
+    const bases = db.prepare('SELECT airport FROM bases WHERE airline_id = ?').all(airline.id).map((b) => b.airport);
+    const top = Object.keys(AIRPORTS).filter((c) => c !== code && distanceKm(code, c) >= 300)
+      .map(market).sort((x, y) => y.demand - x.demand).slice(0, 10);
+    const slot = isSlotAirport(code) ? (() => {
+      const used = slotsUsed(code);
+      return { capacity: slotCapacity(code), used, price: slotPrice(code, used), mine: db.prepare('SELECT count FROM slots WHERE airline_id = ? AND airport = ?').get(airline.id, code)?.count || 0 };
+    })() : null;
+    return {
+      airport: AIRPORTS[code], isBase: bases.includes(code), slot,
+      totals: { routes: routes.length, pax: routes.reduce((s, r) => s + r.pax, 0), seats: routes.reduce((s, r) => s + r.seats, 0) },
+      airlines: [...airlines.values()].sort((x, y) => y.pax - x.pax), routes: routes.slice(0, 40),
+      fromBases: bases.filter((b) => b !== code).map(market), top,
     };
   });
 
@@ -637,6 +684,74 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     const m = db.prepare('SELECT alliance_id FROM alliance_members WHERE airline_id = ?').get(airline.id) || fail(400, 'Nie należysz do sojuszu');
     db.prepare('INSERT INTO alliance_messages(alliance_id, airline_id, text, created_at) VALUES (?, ?, ?, ?)').run(m.alliance_id, airline.id, text, Date.now());
     db.prepare('DELETE FROM alliance_messages WHERE alliance_id = ? AND id NOT IN (SELECT id FROM alliance_messages WHERE alliance_id = ? ORDER BY id DESC LIMIT 500)').run(m.alliance_id, m.alliance_id);
+    return { ok: true };
+  });
+
+  // --- Fuzje i przejęcia ---------------------------------------------------
+  on('GET', '/api/takeovers', (ctx) => {
+    const airline = requireAirline(ctx);
+    const day = currentDay(db);
+    const name = (id) => db.prepare('SELECT name, code FROM airlines WHERE id = ?').get(id);
+    const targets = db.prepare(
+      `SELECT a.*, u.username, u.is_bot, (SELECT COUNT(*) FROM aircraft WHERE airline_id = a.id) AS fleet,
+        (SELECT COUNT(*) FROM routes WHERE airline_id = a.id) AS routes
+       FROM airlines a JOIN users u ON u.id = a.user_id WHERE a.id != ?`
+    ).all(airline.id).map((a) => ({
+      id: a.id, name: a.name, code: a.code, bot: !!a.is_bot, owner: a.username, hub: a.hub, color1: a.color1, color2: a.color2, logo: a.logo,
+      fleet: a.fleet, routes: a.routes, value: companyValue(db, a, day), price: takeoverPrice(db, a, day),
+      offered: !!db.prepare('SELECT 1 FROM takeover_offers WHERE buyer_id = ? AND target_id = ?').get(airline.id, a.id),
+    })).sort((x, y) => x.price - y.price);
+    const offer = (o, id) => ({ id: o.id, price: o.price, day: o.day, expires: o.day + RULES.takeoverOfferDays, ...name(id) });
+    return {
+      targets,
+      incoming: db.prepare('SELECT * FROM takeover_offers WHERE target_id = ? ORDER BY id').all(airline.id).map((o) => offer(o, o.buyer_id)),
+      outgoing: db.prepare('SELECT * FROM takeover_offers WHERE buyer_id = ? ORDER BY id').all(airline.id).map((o) => offer(o, o.target_id)),
+    };
+  });
+
+  // Linię komputerową przejmuje się od razu; graczowi składa się ofertę, którą on akceptuje albo odrzuca.
+  on('POST', '/api/takeovers', async (ctx) => {
+    const { airlineId } = await readJson(ctx.req);
+    return tx(db, () => {
+      const airline = requireAirline(ctx);
+      const target = db.prepare('SELECT a.*, u.is_bot FROM airlines a JOIN users u ON u.id = a.user_id WHERE a.id = ?').get(Number(airlineId)) || fail(404, 'Nie ma takiej linii');
+      if (target.id === airline.id) fail(400, 'Nie możesz przejąć własnej linii');
+      const price = takeoverPrice(db, target);
+      if (airline.cash < price) fail(400, `Brak środków (potrzeba ${money(price)})`);
+      if (target.is_bot) {
+        mergeAirlines(db, airline.id, target.id, price);
+        return { ok: true, merged: true };
+      }
+      db.prepare('INSERT INTO takeover_offers(buyer_id, target_id, price, day) VALUES (?, ?, ?, ?) ON CONFLICT(buyer_id, target_id) DO UPDATE SET price = excluded.price, day = excluded.day')
+        .run(airline.id, target.id, price, currentDay(db));
+      addNews(db, `${airline.name} składa ofertę przejęcia linii ${target.name} za ${money(price)}.`);
+      return { ok: true, merged: false };
+    });
+  });
+
+  on('POST', '/api/takeovers/:id/accept', async (ctx) => {
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      const o = db.prepare('SELECT * FROM takeover_offers WHERE id = ? AND target_id = ?').get(Number(ctx.params.id), airline.id) || fail(404, 'Nie ma takiej oferty');
+      const buyer = db.prepare('SELECT * FROM airlines WHERE id = ?').get(o.buyer_id);
+      if (buyer.cash < o.price) fail(400, `${buyer.name} nie ma już pieniędzy na tę ofertę`);
+      mergeAirlines(db, buyer.id, airline.id, o.price);
+    });
+    return { ok: true };
+  });
+
+  on('POST', '/api/takeovers/:id/reject', async (ctx) => {
+    const airline = requireAirline(ctx);
+    const o = db.prepare('SELECT * FROM takeover_offers WHERE id = ? AND target_id = ?').get(Number(ctx.params.id), airline.id) || fail(404, 'Nie ma takiej oferty');
+    db.prepare('DELETE FROM takeover_offers WHERE id = ?').run(o.id);
+    addNews(db, `${airline.name} odrzuca ofertę przejęcia od ${db.prepare('SELECT name FROM airlines WHERE id = ?').get(o.buyer_id).name}.`);
+    return { ok: true };
+  });
+
+  on('DELETE', '/api/takeovers/:id', (ctx) => {
+    const airline = requireAirline(ctx);
+    const r = db.prepare('DELETE FROM takeover_offers WHERE id = ? AND buyer_id = ?').run(Number(ctx.params.id), airline.id);
+    if (!r.changes) fail(404, 'Nie ma takiej oferty');
     return { ok: true };
   });
 

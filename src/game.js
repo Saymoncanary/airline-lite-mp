@@ -44,6 +44,10 @@ export const RULES = {
   // ograniczona dla wszystkich linii razem, a cena rośnie, im mniej ich zostało.
   slotMinSize: 9, slotCapacity: { 9: 60, 10: 40 }, slotBasePrice: { 9: 1e6, 10: 1.5e6 }, slotSellBack: 0.5,
   hubFreeSlots: 10, // darmowe sloty dla nowej linii z bazą na takim lotnisku
+  takeoverPremium: 1.3, // cena przejęcia: wartość firmy × premia + dopłata za każdą trasę
+  takeoverPerRoute: 1e6,
+  takeoverMin: 10e6,
+  takeoverOfferDays: 7, // tyle dni gry właściciel ma na odpowiedź na ofertę
 };
 
 // Kontynent lotniska (Rosję liczymy do Europy).
@@ -277,6 +281,60 @@ export function companyValue(db, airline, day = currentDay(db)) {
   return airline.cash - airline.debt + fleet;
 }
 
+// Ile kosztuje przejęcie linii (kupujący dostaje też jej gotówkę i długi, stąd premia ponad wartość).
+export function takeoverPrice(db, airline, day = currentDay(db)) {
+  const routes = db.prepare('SELECT COUNT(*) AS n FROM routes WHERE airline_id = ?').get(airline.id).n;
+  const v = companyValue(db, airline, day) * RULES.takeoverPremium + routes * RULES.takeoverPerRoute;
+  return Math.round(Math.max(RULES.takeoverMin, v) / 1e5) * 1e5;
+}
+
+// Fuzja: kupujący płaci cenę i przejmuje całą linię: gotówkę, długi, flotę, trasy, bazy i sloty.
+// Właściciel przejętej linii (człowiek) dostaje cenę jako premię do kapitału swojej następnej linii.
+export function mergeAirlines(db, buyerId, targetId, price, day = currentDay(db)) {
+  const buyer = db.prepare('SELECT * FROM airlines WHERE id = ?').get(buyerId);
+  const target = db.prepare('SELECT a.*, u.is_bot FROM airlines a JOIN users u ON u.id = a.user_id WHERE a.id = ?').get(targetId);
+  if (!buyer || !target || buyer.id === target.id) throw new Error('Nieprawidłowe przejęcie');
+  const log = (amount, text) => db.prepare('INSERT INTO ledger(airline_id, day, amount, text) VALUES (?, ?, ?, ?)').run(buyer.id, day, amount, text);
+  db.prepare('UPDATE airlines SET cash = cash - ? + ?, debt = debt + ? WHERE id = ?').run(price, target.cash, target.debt, buyer.id);
+  log(-price, `Przejęcie linii ${target.name} (${target.code})`);
+  if (target.cash) log(target.cash, `Gotówka przejętej linii ${target.name}`);
+
+  // Samoloty przechodzą razem z przypisaniami do tras; oferty sprzedaży na rynku wtórnym znikają.
+  db.prepare('DELETE FROM used_listings WHERE aircraft_id IN (SELECT id FROM aircraft WHERE airline_id = ?)').run(target.id);
+  db.prepare('UPDATE aircraft SET airline_id = ? WHERE airline_id = ?').run(buyer.id, target.id);
+  const mine = new Map(db.prepare('SELECT id, origin, dest FROM routes WHERE airline_id = ?').all(buyer.id).map((r) => [pairKey(r.origin, r.dest), r.id]));
+  for (const r of db.prepare('SELECT * FROM routes WHERE airline_id = ?').all(target.id)) {
+    const same = mine.get(pairKey(r.origin, r.dest));
+    if (same) {
+      // Kupujący już lata na tej trasie: samoloty dołączają do jego trasy.
+      db.prepare('INSERT OR REPLACE INTO flights(aircraft_id, route_id, round_trips) SELECT aircraft_id, ?, round_trips FROM flights WHERE route_id = ?').run(same, r.id);
+      db.prepare('DELETE FROM routes WHERE id = ?').run(r.id);
+    } else {
+      db.prepare('UPDATE routes SET airline_id = ? WHERE id = ?').run(buyer.id, r.id);
+    }
+  }
+  db.prepare('INSERT OR IGNORE INTO bases(airline_id, airport) SELECT ?, airport FROM bases WHERE airline_id = ?').run(buyer.id, target.id);
+  for (const s of db.prepare('SELECT * FROM slots WHERE airline_id = ?').all(target.id)) {
+    db.prepare('INSERT INTO slots(airline_id, airport, count) VALUES (?, ?, ?) ON CONFLICT(airline_id, airport) DO UPDATE SET count = count + excluded.count')
+      .run(buyer.id, s.airport, s.count);
+  }
+  db.prepare('UPDATE airlines SET total_pax = total_pax + ? WHERE id = ?').run(target.total_pax, buyer.id);
+
+  // Sojusz przejętej linii: lider przechodzi na kolejnego członka, pusty sojusz znika.
+  const m = db.prepare('SELECT alliance_id FROM alliance_members WHERE airline_id = ?').get(target.id);
+  if (m) {
+    db.prepare('DELETE FROM alliance_members WHERE airline_id = ?').run(target.id);
+    const next = db.prepare('SELECT airline_id FROM alliance_members WHERE alliance_id = ? ORDER BY joined_day, airline_id LIMIT 1').get(m.alliance_id);
+    if (!next) db.prepare('DELETE FROM alliances WHERE id = ?').run(m.alliance_id);
+    else db.prepare('UPDATE alliances SET leader_id = ? WHERE id = ? AND leader_id = ?').run(next.airline_id, m.alliance_id, target.id);
+  }
+  if (target.is_bot) db.prepare('UPDATE users SET retired = 1 WHERE id = ?').run(target.user_id);
+  else db.prepare('UPDATE users SET bonus_cash = bonus_cash + ? WHERE id = ?').run(price, target.user_id);
+  db.prepare('DELETE FROM airlines WHERE id = ?').run(target.id);
+  db.prepare('INSERT INTO news(day, text) VALUES (?, ?)').run(day,
+    `${buyer.name} przejmuje linię ${target.name} (${target.code}) za $${(price / 1e6).toFixed(1)} mln!`);
+}
+
 export function activeEvents(db, day = currentDay(db)) {
   return db.prepare('SELECT * FROM events WHERE start_day <= ? AND end_day >= ? ORDER BY id').all(day, day);
 }
@@ -424,6 +482,7 @@ export function endSeason(db, day, seasonDays) {
     DELETE FROM used_listings WHERE aircraft_id IS NOT NULL;
     DELETE FROM alliances;
     DELETE FROM airlines;
+    UPDATE users SET bonus_cash = 0, retired = 0;
   `);
   db.prepare('UPDATE game_state SET season = ?, season_end_day = ? WHERE id = 1').run(season + 1, day + seasonDays);
   db.prepare('INSERT INTO news(day, text) VALUES (?, ?)').run(day, top.length
@@ -451,6 +510,7 @@ export function runTick(db, rng = Math.random, { seasonDays } = {}) {
       db.prepare('INSERT INTO news(day, text) VALUES (?, ?)').run(day, e.text);
     }
     fuel = Math.min(2, Math.max(0.5, fuel));
+    db.prepare('DELETE FROM takeover_offers WHERE day < ?').run(day - RULES.takeoverOfferDays);
     const events = activeEvents(db, day);
     const season = seasonMult(day);
 

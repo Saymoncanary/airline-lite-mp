@@ -22,7 +22,8 @@ const MAX_FLEET = 30;
 export function ensureBots(db, count, day) {
   for (const b of BOTS.slice(0, count)) {
     if (db.prepare('SELECT 1 FROM airlines WHERE code = ? OR name = ?').get(b.code, b.name)) continue;
-    let user = db.prepare('SELECT id FROM users WHERE username = ?').get(`bot-${b.code}`);
+    let user = db.prepare('SELECT id, retired FROM users WHERE username = ?').get(`bot-${b.code}`);
+    if (user?.retired) continue; // przejęta przez gracza: wraca dopiero w nowym sezonie
     if (!user) {
       // Pusty hash: na konto bota nie da się zalogować.
       const r = db.prepare("INSERT INTO users(username, pass_hash, salt, created_at, is_bot) VALUES (?, '', 'bot', ?, 1)").run(`bot-${b.code}`, Date.now());
