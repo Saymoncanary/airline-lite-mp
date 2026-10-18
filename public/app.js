@@ -112,6 +112,7 @@ async function route() {
 async function refresh(auto = false) {
   const members = (d) => JSON.stringify(d?.alliance?.members.map((m) => m.id) ?? null);
   const before = members(state.data);
+  const dayBefore = state.data?.day;
   try {
     state.data = await api('GET', '/api/airline');
     state.nextDayAt = state.data.nextDayIn == null ? null : Date.now() + state.data.nextDayIn;
@@ -125,9 +126,28 @@ async function refresh(auto = false) {
   tickCountdown();
   // Przy automatycznym odświeżaniu nie przerysowujemy formularzy, w których gracz coś wpisuje.
   const allianceChanged = state.tab === 'alliance' && before !== members(state.data) && !$('#chat-text')?.value && !$('#al-name')?.value;
+  // Nowy dzień gry: przerysowujemy bieżącą zakładkę, chyba że gracz akurat coś w niej wpisuje
+  // (mapa i czat sojuszu odświeżają się po swojemu).
+  const newDay = auto && dayBefore != null && state.data.day !== dayBefore && !['map', 'alliance', 'dashboard', 'ranking'].includes(state.tab) && !editing();
   // Ranking odświeżamy w miejscu, żeby strona nie przewijała się do góry.
   if (auto && state.tab === 'ranking') ranking($('#tab'));
+  else if (newDay) keepScroll(renderMain);
   else if (!auto || state.tab === 'dashboard' || allianceChanged) renderMain();
+}
+
+// Czy gracz zaczął coś wpisywać lub wybierać w bieżącej zakładce (wtedy jej nie przerysowujemy).
+function editing() {
+  const tab = $('#tab');
+  if (!tab) return false;
+  return state.dirty || (tab.contains(document.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName));
+}
+
+// Przerysowanie bez skakania strony: przywracamy przewinięcie także po doładowaniu danych zakładki.
+function keepScroll(fn) {
+  const y = window.scrollY;
+  fn();
+  window.scrollTo(0, y);
+  setTimeout(() => window.scrollTo(0, y), 400);
 }
 
 // Odliczanie do następnego dnia gry, liczone od czasu podanego przez serwer.
@@ -225,8 +245,11 @@ const CLS = [['y', 'Ekon.'], ['j', 'Biznes'], ['f', 'Pierwsza']];
 function renderMain() {
   if (state.map) { state.map.remove(); state.map = null; }
   clearInterval(state.chatTimer);
+  state.dirty = false;
   view().innerHTML = `<nav class="tabs">${TABS.map(([id, label]) => `<button data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div id="tab"></div>`;
   view().querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; renderMain(); }));
+  // Zmiana w formularzu, której gracz jeszcze nie zatwierdził, wstrzymuje automatyczne przerysowanie.
+  for (const ev of ['input', 'change']) $('#tab').addEventListener(ev, () => (state.dirty = true));
   ({ dashboard, routes: routesTab, fleet, shop, used: usedTab, map: mapTab, finance, airline: airlineTab, alliance: allianceTab, ranking })[state.tab]($('#tab'));
 }
 
