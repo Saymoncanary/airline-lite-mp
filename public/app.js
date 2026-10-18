@@ -519,9 +519,13 @@ async function usedTab(el) {
 }
 
 const INCOME_ROWS = [['rev_y', 'Klasa ekonomiczna'], ['rev_j', 'Klasa biznes'], ['rev_f', 'Pierwsza klasa']];
-const COST_ROWS = [['fuel', 'Paliwo'], ['ops', 'Obsługa techniczna i załogi'], ['fees', 'Opłaty lotniskowe'],
-  ['fixed', 'Utrzymanie samolotów'], ['lease', 'Raty leasingu'], ['maint', 'Przeglądy i awarie'], ['interest', 'Odsetki od kredytu']];
-const COST_COLORS = { fuel: '#f59e0b', ops: '#3fa9f5', fees: '#a78bfa', fixed: '#64748b', lease: '#f472b6', maint: '#f06a6a', interest: '#94a3b8' };
+const COST_ROWS = [['fuel', 'Paliwo'], ['ops', 'Obsługa techniczna'], ['staff', 'Pensje załóg'], ['fees', 'Opłaty lotniskowe'],
+  ['fixed', 'Utrzymanie samolotów'], ['lease', 'Raty leasingu'], ['maint', 'Przeglądy i awarie'], ['service', 'Obsługa pokładowa'],
+  ['marketing', 'Reklama'], ['loyalty', 'Program lojalnościowy'], ['interest', 'Odsetki od kredytu']];
+const COST_COLORS = {
+  fuel: '#f59e0b', ops: '#3fa9f5', staff: '#22d3ee', fees: '#a78bfa', fixed: '#64748b', lease: '#f472b6', maint: '#f06a6a',
+  service: '#84cc16', marketing: '#fb923c', loyalty: '#e879f9', interest: '#94a3b8',
+};
 
 async function finance(el) {
   const { airline, bases } = state.data;
@@ -690,6 +694,7 @@ async function allianceTab(el) {
 // Zakładka „Linia”: wizerunek, personel, marketing i osiągnięcia.
 function airlineTab(el) {
   const { airline } = state.data;
+  const R = state.st.rules;
   const sample = state.st.aircraftTypes.find((t) => t.id === 'A320');
   const wide = state.st.aircraftTypes.find((t) => t.id === 'B789');
   el.innerHTML = `
@@ -703,12 +708,47 @@ function airlineTab(el) {
       </div>
       <p class="muted">Barwy widać na samolotach we „Flocie”, na mapie tras i w rankingu.</p>
     </div>
-    <div id="airline-more"></div>`;
+    <div class="card"><h3>Personel i obsługa pokładowa</h3>
+      <div class="row">
+        <label>Pensje personelu: <b id="wage-val">${airline.wage}%</b> normy
+          <input type="range" id="wage" min="${R.wageMin}" max="${R.wageMax}" step="5" value="${airline.wage}" style="width:260px"></label>
+        <label>Poziom obsługi<select id="service">${R.serviceLevels.map((l, i) => `<option value="${i + 1}" ${airline.service === i + 1 ? 'selected' : ''}>${l.name} · $${l.costPerPax}/pasażera</option>`).join('')}</select></label>
+        <label class="check"><input type="checkbox" id="loyalty" ${airline.loyalty ? 'checked' : ''}> Program lojalnościowy (${R.loyaltyCostShare * 100}% przychodów)</label>
+        <button id="staff-save">Zapisz</button>
+      </div>
+      <p class="muted">Pensje poniżej 95% grożą strajkiem (połowa lotów odwołana), poniżej 90% psują obsługę.
+        Od 115% personel jest zadowolony i reputacja rośnie. Lepsza obsługa (catering, rozrywka) kosztuje więcej na każdego pasażera
+        (w klasie biznes i pierwszej trzy razy więcej), ale przyciąga klientów i buduje reputację. Program lojalnościowy dodaje ${Math.round((R.loyaltyAppeal - 1) * 100)}% atrakcyjności na wszystkich trasach.</p>
+    </div>
+    <div class="card"><h3>Kampanie reklamowe</h3>
+      <div class="row">
+        <label>Kraj<select id="ad-country">${[...new Set(state.st.airports.map((a) => a.country))].sort((a, b) => a.localeCompare(b, 'pl')).map((c) => `<option>${esc(c)}</option>`).join('')}</select></label>
+        <label>Rozmiar<select id="ad-level">${R.campaignLevels.map((l, i) => `<option value="${i}">${l.name} · ${usd(l.costPerDay)}/dzień · +${Math.round((l.appeal - 1) * 100)}%</option>`).join('')}</select></label>
+        <button id="ad-start">Uruchom kampanię (${R.campaignDays} dni)</button>
+      </div>
+      <p class="muted">Reklama w kraju zwiększa atrakcyjność Twoich tras do i z tego kraju oraz ogólny popyt na nich. Najwyżej ${R.maxCampaigns} kampanii naraz.</p>
+      <div id="ad-list" class="muted">Ładowanie…</div>
+    </div>`;
   const current = () => ({ color1: $('#liv-c1').value, color2: $('#liv-c2').value, logo: $('#liv-logo').value, code: airline.code });
   const preview = () => { $('#liv-preview').innerHTML = planeSvg(sample, current()) + planeSvg(wide, current()); };
   for (const id of ['#liv-c1', '#liv-c2', '#liv-logo']) $(id).oninput = preview;
   preview();
   $('#liv-save').onclick = () => act(() => api('POST', '/api/airline/livery', current()), 'Nowe malowanie zapisane');
+
+  $('#wage').oninput = (e) => { $('#wage-val').textContent = `${e.target.value}%`; };
+  $('#staff-save').onclick = () => act(() => api('POST', '/api/airline/staff', {
+    wage: Number($('#wage').value), service: Number($('#service').value), loyalty: $('#loyalty').checked,
+  }), 'Ustawienia personelu zapisane');
+  $('#ad-country').value = airport(airline.hub).country;
+  $('#ad-start').onclick = () => act(() => api('POST', '/api/campaigns', { country: $('#ad-country').value, level: Number($('#ad-level').value) }), 'Kampania rusza od jutra');
+  api('GET', '/api/campaigns').then((list) => {
+    const box = $('#ad-list');
+    if (!box) return;
+    box.innerHTML = list.length ? `<table>${list.map((c) => `<tr><td>${esc(c.country)}</td><td>${R.campaignLevels[c.level].name}</td>
+      <td>${usd(R.campaignLevels[c.level].costPerDay)}/dzień</td><td>do ${gameDate(c.end_day)}</td>
+      <td><button class="danger" data-adstop="${c.id}">Zakończ</button></td></tr>`).join('')}</table>` : 'Brak aktywnych kampanii.';
+    box.querySelectorAll('[data-adstop]').forEach((b) => (b.onclick = () => act(() => api('DELETE', `/api/campaigns/${b.dataset.adstop}`), 'Kampania zakończona')));
+  });
 }
 
 async function ranking(el) {

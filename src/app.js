@@ -142,6 +142,43 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     return { ok: true };
   });
 
+  on('POST', '/api/airline/staff', async (ctx) => {
+    const body = await readJson(ctx.req);
+    const wage = Math.round(Number(body.wage)), service = Number(body.service);
+    if (!(wage >= RULES.wageMin && wage <= RULES.wageMax)) fail(400, `Pensje: ${RULES.wageMin}-${RULES.wageMax}% normy`);
+    if (!(Number.isInteger(service) && service >= 1 && service <= RULES.serviceLevels.length)) fail(400, 'Nieznany poziom obsługi');
+    db.prepare('UPDATE airlines SET wage = ?, service = ?, loyalty = ? WHERE id = ?').run(wage, service, body.loyalty ? 1 : 0, requireAirline(ctx).id);
+    return { ok: true };
+  });
+
+  // --- Marketing -------------------------------------------------------------
+  on('GET', '/api/campaigns', (ctx) =>
+    db.prepare('SELECT * FROM campaigns WHERE airline_id = ? AND end_day > ? ORDER BY end_day').all(requireAirline(ctx).id, currentDay(db)));
+
+  on('POST', '/api/campaigns', async (ctx) => {
+    const body = await readJson(ctx.req);
+    const level = Number(body.level), country = String(body.country || '');
+    if (!RULES.campaignLevels[level]) fail(400, 'Nieznany rozmiar kampanii');
+    if (!Object.values(AIRPORTS).some((a) => a.country === country)) fail(400, 'Nieznany kraj');
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      const day = currentDay(db);
+      const active = db.prepare('SELECT COUNT(*) AS n FROM campaigns WHERE airline_id = ? AND end_day >= ?').get(airline.id, day + 1).n;
+      if (active >= RULES.maxCampaigns) fail(400, `Możesz prowadzić najwyżej ${RULES.maxCampaigns} kampanii naraz`);
+      db.prepare('INSERT INTO campaigns(airline_id, country, level, start_day, end_day) VALUES (?, ?, ?, ?, ?)')
+        .run(airline.id, country, level, day + 1, day + RULES.campaignDays);
+    });
+    return { ok: true };
+  });
+
+  on('DELETE', '/api/campaigns/:id', async (ctx) => {
+    await readJson(ctx.req);
+    const r = db.prepare('UPDATE campaigns SET end_day = ? WHERE id = ? AND airline_id = ? AND end_day > ?')
+      .run(currentDay(db), Number(ctx.params.id), requireAirline(ctx).id, currentDay(db));
+    if (!r.changes) fail(404, 'Nie ma takiej kampanii');
+    return { ok: true };
+  });
+
   function myAlliance(airlineId) {
     const m = db.prepare('SELECT alliance_id FROM alliance_members WHERE airline_id = ?').get(airlineId);
     if (!m) return null;

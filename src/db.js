@@ -134,6 +134,19 @@ export function openDb(file) {
   addColumn('airlines', 'color1', "TEXT NOT NULL DEFAULT '#1d4ed8'");
   addColumn('airlines', 'color2', "TEXT NOT NULL DEFAULT '#dc2626'");
   addColumn('airlines', 'logo', "TEXT NOT NULL DEFAULT '★'");
+  addColumn('airlines', 'wage', 'INTEGER NOT NULL DEFAULT 100');
+  addColumn('airlines', 'service', 'INTEGER NOT NULL DEFAULT 2');
+  addColumn('airlines', 'loyalty', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaigns (
+      id INTEGER PRIMARY KEY,
+      airline_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,
+      country TEXT NOT NULL,
+      level INTEGER NOT NULL,
+      start_day INTEGER NOT NULL,
+      end_day INTEGER NOT NULL
+    );
+  `);
   // Dziennik operacji gotówkowych poza codziennym wynikiem (zakupy, sprzedaż, kredyty...).
   db.exec(`
     CREATE TABLE IF NOT EXISTS ledger (

@@ -22,6 +22,24 @@ export const RULES = {
   connectShare: 0.35, // jaka część popytu bez lotu bezpośredniego wybierze przesiadkę
   connectDiscount: 0.8, // bilet z przesiadką kosztuje tyle co suma obu odcinków razy ta liczba
   connectMaxDetour: 1.5, // przesiadka ma sens, gdy trasa przez hub jest najwyżej o 50% dłuższa
+  // Personel: pensje w % normy. Za niskie grożą strajkiem, wysokie poprawiają obsługę.
+  wageMin: 80, wageMax: 140, staffShare: 0.45, // jaka część kosztów obsługi lotu to pensje załóg
+  // Obsługa pokładowa: koszt na pasażera (premium ×3) i atrakcyjność dla klientów.
+  serviceLevels: [
+    { name: 'Podstawowa', costPerPax: 0, appeal: 0.88, rep: -0.08 },
+    { name: 'Standardowa', costPerPax: 4, appeal: 1, rep: 0 },
+    { name: 'Komfortowa', costPerPax: 9, appeal: 1.07, rep: 0.04 },
+    { name: 'Premium', costPerPax: 16, appeal: 1.13, rep: 0.08 },
+    { name: 'Luksusowa', costPerPax: 26, appeal: 1.18, rep: 0.12 },
+  ],
+  loyaltyCostShare: 0.02, loyaltyAppeal: 1.08, // program lojalnościowy: 2% przychodów, +8% atrakcyjności
+  // Kampanie reklamowe w kraju: dzienny koszt, wzrost atrakcyjności i popytu na trasach do tego kraju.
+  campaignLevels: [
+    { name: 'Mała', costPerDay: 30e3, appeal: 1.08 },
+    { name: 'Średnia', costPerDay: 90e3, appeal: 1.15 },
+    { name: 'Duża', costPerDay: 250e3, appeal: 1.25 },
+  ],
+  campaignDays: 14, maxCampaigns: 5,
 };
 
 // Symbole do wyboru na stateczniku ('CODE' = kod linii).
@@ -92,7 +110,7 @@ export function maxRoundTrips(type, dist, hoursLeft = RULES.operatingHours) {
 // Koszt jednego lotu (w jedną stronę): paliwo/obsługa + opłaty lotniskowe.
 // fuel to indeks ceny paliwa (1 = normalna cena).
 // Składniki dziennego wyniku linii zapisywane w daily_stats.detail.
-export const COST_PARTS = ['rev_y', 'rev_j', 'rev_f', 'fuel', 'ops', 'fees', 'fixed', 'lease', 'maint', 'interest'];
+export const COST_PARTS = ['rev_y', 'rev_j', 'rev_f', 'fuel', 'ops', 'staff', 'fees', 'fixed', 'lease', 'maint', 'service', 'marketing', 'loyalty', 'interest'];
 
 export function legCost(type, dist, fuel = 1) {
   const c = legCostParts(type, dist, fuel);
@@ -330,6 +348,30 @@ export function runTick(db, rng = Math.random) {
       db.prepare('SELECT a.*, m.alliance_id FROM airlines a LEFT JOIN alliance_members m ON m.airline_id = a.id').all()
         .map((a) => [a.id, { ...a, revenue: 0, costs: 0, pax: 0, seats: 0, condSum: 0, condN: 0, breakdowns: 0, parts: Object.fromEntries(COST_PARTS.map((k) => [k, 0])) }])
     );
+    // Kampanie reklamowe: linia → kraj → poziom kampanii.
+    const campaigns = new Map();
+    for (const c of db.prepare('SELECT * FROM campaigns WHERE start_day <= ? AND end_day >= ?').all(day, day)) {
+      const al = airlines.get(c.airline_id);
+      if (!al) continue;
+      al.parts.marketing += RULES.campaignLevels[c.level].costPerDay;
+      if (!campaigns.has(c.airline_id)) campaigns.set(c.airline_id, new Map());
+      const m = campaigns.get(c.airline_id);
+      m.set(c.country, Math.max(m.get(c.country) ?? -1, c.level));
+    }
+    const adBoost = (al, a, b) => {
+      const m = campaigns.get(al.id);
+      if (!m) return 1;
+      const lv = Math.max(m.get(AIRPORTS[a].country) ?? -1, m.get(AIRPORTS[b].country) ?? -1);
+      return lv < 0 ? 1 : RULES.campaignLevels[lv].appeal;
+    };
+    // Atrakcyjność linii dla pasażerów: obsługa, pensje, program lojalnościowy i reklama.
+    const appeal = (al, a, b) => RULES.serviceLevels[al.service - 1].appeal * (al.loyalty ? RULES.loyaltyAppeal : 1)
+      * (al.wage < 90 ? 0.95 : al.wage >= 115 ? 1.03 : 1) * adBoost(al, a, b);
+    // Strajk przy zbyt niskich pensjach: połowa lotów linii tego dnia się nie odbywa.
+    for (const al of airlines.values()) {
+      al.strike = al.wage < 95 && rng() < ((95 - al.wage) / 100) * 0.3;
+      if (al.strike) db.prepare('INSERT INTO news(day, text) VALUES (?, ?)').run(day, `Strajk personelu w ${al.name}! Załogi domagają się wyższych pensji, część lotów odwołana.`);
+    }
     const basesByAirline = new Map();
     for (const b of db.prepare('SELECT * FROM bases').all()) {
       if (!basesByAirline.has(b.airline_id)) basesByAirline.set(b.airline_id, new Set());
@@ -338,7 +380,7 @@ export function runTick(db, rng = Math.random) {
     const routes = new Map(
       db.prepare('SELECT * FROM routes').all().map((r) => [r.id, {
         ...r, dist: distanceKm(r.origin, r.dest), prices: routePrices(r),
-        seats: { y: 0, j: 0, f: 0 }, cost: 0, pax: { y: 0, j: 0, f: 0 }, revenue: 0, rev: { y: 0, j: 0, f: 0 }, parts: { fuel: 0, ops: 0, fees: 0 }, transfer: 0,
+        seats: { y: 0, j: 0, f: 0 }, cost: 0, pax: { y: 0, j: 0, f: 0 }, revenue: 0, rev: { y: 0, j: 0, f: 0 }, parts: { fuel: 0, ops: 0, staff: 0, fees: 0 }, transfer: 0,
       }])
     );
 
@@ -371,6 +413,7 @@ export function runTick(db, rng = Math.random) {
         if (!inMaint) updAc.run(Math.max(0, ac.condition - dailyWear(0)), ac.id);
         continue;
       }
+      if (al.strike && rng() < 0.5) continue; // lot odwołany przez strajk
       // Mocno zużyty samolot może się zepsuć i nie polecieć.
       if (ac.condition < 30 && rng() < (30 - ac.condition) / 60) {
         al.breakdowns++;
@@ -382,8 +425,12 @@ export function runTick(db, rng = Math.random) {
       for (const [r, n] of legs) {
         for (const c of CLASSES) r.seats[c] += s[c] * n;
         const c = legCostParts(t, r.dist, fuel);
-        for (const k of ['fuel', 'ops', 'fees']) r.parts[k] += 2 * n * c[k];
-        r.cost += 2 * n * (c.fuel + c.ops + c.fees);
+        const staff = c.ops * RULES.staffShare * (al.wage / 100), tech = c.ops * (1 - RULES.staffShare);
+        r.parts.fuel += 2 * n * c.fuel;
+        r.parts.ops += 2 * n * tech;
+        r.parts.staff += 2 * n * staff;
+        r.parts.fees += 2 * n * c.fees;
+        r.cost += 2 * n * (c.fuel + tech + staff + c.fees);
         trips += n;
       }
       updAc.run(Math.max(0, ac.condition - dailyWear(trips)), ac.id);
@@ -397,7 +444,9 @@ export function runTick(db, rng = Math.random) {
     }
     for (const list of markets.values()) {
       const { origin, dest, dist } = list[0];
-      const demand = dailyDemand(origin, dest) * season * eventMult(events, origin, dest);
+      // Reklama zwiększa też ogólny popyt na trasie.
+      const ads = Math.max(...list.map((r) => adBoost(airlines.get(r.airline_id), origin, dest)));
+      const demand = dailyDemand(origin, dest) * season * eventMult(events, origin, dest) * (1 + (ads - 1) * 0.6);
       const bonus = (r) => {
         const al = airlines.get(r.airline_id);
         if (!al.alliance_id) return 1;
@@ -411,7 +460,10 @@ export function runTick(db, rng = Math.random) {
       for (const c of CLASSES) {
         const flying = list.filter((r) => r.seats[c] > 0);
         if (!flying.length) continue;
-        const offers = flying.map((r) => ({ seats: r.seats[c], price: r.prices[c], reputation: airlines.get(r.airline_id).reputation, bonus: bonus(r) }));
+        const offers = flying.map((r) => {
+          const al = airlines.get(r.airline_id);
+          return { seats: r.seats[c], price: r.prices[c], reputation: al.reputation, bonus: bonus(r) * appeal(al, origin, dest) };
+        });
         const pax = allocateMarket(demand * classShare(c, dist), classFare(c, dist), offers);
         flying.forEach((r, i) => {
           r.pax[c] = Math.round(pax[i] * 2); // oba kierunki
@@ -432,7 +484,8 @@ export function runTick(db, rng = Math.random) {
       const al = airlines.get(r.airline_id);
       al.revenue += r.revenue;
       for (const c of CLASSES) al.parts['rev_' + c] += r.rev[c];
-      for (const k of ['fuel', 'ops', 'fees']) al.parts[k] += r.parts[k];
+      for (const k of ['fuel', 'ops', 'staff', 'fees']) al.parts[k] += r.parts[k];
+      al.parts.service += (r.pax.y + 3 * (r.pax.j + r.pax.f)) * RULES.serviceLevels[al.service - 1].costPerPax;
       al.pax += pax - r.transfer / 2; // pasażer z przesiadką leci dwoma odcinkami, liczymy go raz
       al.seats += seats;
     }
@@ -441,12 +494,15 @@ export function runTick(db, rng = Math.random) {
     const insStat = db.prepare('INSERT OR REPLACE INTO daily_stats(airline_id, day, revenue, costs, pax, detail) VALUES (?, ?, ?, ?, ?, ?)');
     for (const al of airlines.values()) {
       al.parts.interest += (al.debt * RULES.loanInterestYear) / 365;
+      if (al.loyalty) al.parts.loyalty += al.revenue * RULES.loyaltyCostShare;
       al.costs = COST_PARTS.filter((k) => !k.startsWith('rev_')).reduce((s, k) => s + al.parts[k], 0);
       const profit = al.revenue - al.costs;
       const lf = al.seats ? al.pax / al.seats : 0;
       let rep = al.reputation;
       if (al.seats > 0) rep += profit > 0 && lf > 0.6 ? 0.15 : profit < 0 ? -0.2 : 0.05;
       if (al.condN && al.condSum / al.condN < 50) rep -= 0.15; // zaniedbana flota
+      if (al.seats > 0) rep += RULES.serviceLevels[al.service - 1].rep + (al.wage >= 115 ? 0.03 : al.wage < 90 ? -0.05 : 0);
+      if (al.strike) rep -= 1;
       rep -= 0.3 * al.breakdowns;
       rep = Math.min(100, Math.max(0, rep));
       updAirline.run(al.cash + profit, rep, al.id);

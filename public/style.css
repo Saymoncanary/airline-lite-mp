@@ -86,3 +86,4 @@ table.pl tr.big td { font-size: 16px; }
 .livery-preview svg.plane { width: 300px; height: 104px; background: var(--panel2); border-radius: 8px; }
 .fleet-type svg.plane { width: 120px; height: 41px; }
 input[type=color] { width: 90px; height: 38px; padding: 3px; cursor: pointer; }
+label.check { display: flex; align-items: center; gap: 8px; color: var(--text); } label.check input { width: auto; margin: 0; }

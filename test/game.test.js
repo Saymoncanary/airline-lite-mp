@@ -215,7 +215,7 @@ test('jeden samolot na kilku trasach', async () => {
   const fin = (await a('GET', '/api/finance')).data;
   const d = fin.days[fin.days.length - 1];
   assert.ok(d.detail.rev_y > 0 && d.detail.fuel > 0 && d.detail.fixed > 0);
-  const parts = ['fuel', 'ops', 'fees', 'fixed', 'lease', 'maint', 'interest'].reduce((s, k) => s + d.detail[k], 0);
+  const parts = Object.entries(d.detail).filter(([k]) => !k.startsWith('rev_') && k !== 'seats').reduce((s, [, v]) => s + v, 0);
   assert.ok(Math.abs(parts - d.costs) < 10);
   assert.equal(fin.routes.find((r) => r.id === prg).planes, 1);
   assert.equal(fin.entries[0].text, 'Zakup: Airbus A320neo');
@@ -246,6 +246,34 @@ test('przesiadki przez hub', async () => {
   const routes = (await a('GET', '/api/airline')).data.routes;
   for (const r of routes) assert.ok(r.detail.transfer > 0, `${r.origin}-${r.dest} powinna mieć przesiadki`);
   assert.equal(routes[0].detail.transfer, routes[1].detail.transfer);
+  server.closeAllConnections();
+  server.close();
+});
+
+test('personel, obsługa, reklama i program lojalnościowy', async () => {
+  const { db, server, base } = await startServer();
+  const a = client(base);
+  await a('POST', '/api/register', { username: 'marek', password: 'haslo1234' });
+  await a('POST', '/api/airline', { name: 'Marek Air', code: 'MK', hub: 'WAW' });
+  await a('POST', '/api/aircraft', { typeId: 'A320C', mode: 'buy' });
+  for (let i = 0; i < 6; i++) runTick(db, calm);
+  const ac = (await a('GET', '/api/airline')).data.fleet[0];
+  const r = (await a('POST', '/api/routes', { origin: 'WAW', dest: 'CDG' })).data.id;
+  await a('POST', `/api/aircraft/${ac.id}/assign`, { routeId: r });
+  assert.equal((await a('POST', '/api/airline/staff', { wage: 50, service: 2 })).status, 400);
+  assert.equal((await a('POST', '/api/airline/staff', { wage: 120, service: 9 })).status, 400);
+  runTick(db, calm);
+  const before = (await a('GET', '/api/airline')).data.routes[0].last_pax;
+  assert.equal((await a('POST', '/api/airline/staff', { wage: 120, service: 4, loyalty: true })).status, 200);
+  assert.equal((await a('POST', '/api/campaigns', { country: 'Francja', level: 2 })).status, 200);
+  assert.equal((await a('POST', '/api/campaigns', { country: 'Atlantyda', level: 0 })).status, 400);
+  assert.equal((await a('GET', '/api/campaigns')).data.length, 1);
+  runTick(db, calm);
+  const after = (await a('GET', '/api/airline')).data.routes[0].last_pax;
+  assert.ok(after >= before, `reklama i obsługa nie powinny zmniejszyć liczby pasażerów (${before} → ${after})`);
+  const d = (await a('GET', '/api/finance')).data.days.at(-1).detail;
+  assert.equal(d.marketing, 250e3);
+  assert.ok(d.service > 0 && d.loyalty > 0 && d.staff > 0);
   server.closeAllConnections();
   server.close();
 });
