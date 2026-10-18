@@ -328,13 +328,21 @@ function fleet(el) {
     if (a.listing_id) return `<span class="warn">Na sprzedaż: ${usd(a.listing_price)}</span>`;
     return a.route_id ? '<span class="pos">Lata</span>' : '<span class="muted">W hangarze</span>';
   };
+  // Jaką część dostępnych godzin lotu na dobę samolot faktycznie wykorzystuje.
+  const usage = (a, t) => {
+    const r = routes.find((x) => x.id === a.route_id);
+    if (!r || !a.round_trips) return '<span class="muted">0%</span>';
+    const hours = a.round_trips * 2 * (distanceKm(r.origin, r.dest) / t.speed + R.turnaroundHours);
+    const p = Math.round((hours / R.operatingHours) * 100);
+    return `<b class="${p >= 75 ? 'pos' : p >= 40 ? 'warn' : 'neg'}">${p}%</b><div class="muted">${hours.toFixed(1)} z ${R.operatingHours} h</div>`;
+  };
   el.innerHTML = `<div class="card"><h3>Twoja flota</h3>
     <div class="row">
       <label>Automatyczny przegląd, gdy stan spadnie poniżej (%)<input id="automaint" type="number" min="0" max="95" value="${airline.auto_maint}" style="width:90px"></label>
       <p class="muted">0 = wyłączone. Zużyte samoloty kosztują więcej, psują się i obniżają reputację.</p>
     </div>
     ${planes.length ? `<div class="table-wrap"><table>
-      <tr><th>#</th><th>Typ</th><th>Status</th><th>Stan</th><th>Fotele (biznes / pierwsza)</th><th>Trasa</th><th>Rotacje/dzień</th><th></th></tr>
+      <tr><th>#</th><th>Typ</th><th>Status</th><th>Stan</th><th>Fotele (biznes / pierwsza)</th><th>Trasa</th><th>Rotacje/dzień</th><th>Wykorzystanie</th><th></th></tr>
       ${planes.map((a) => {
         const t = type(a.type_id);
         const delivered = a.delivery_day <= day;
@@ -351,6 +359,7 @@ function fleet(el) {
             <div class="muted">${a.seatMap.y} E · ${a.seatMap.j} B · ${a.seatMap.f} P</div></td>
           <td><select data-route="${a.id}" ${delivered ? '' : 'disabled'}><option value="">— w hangarze —</option>${opts}</select></td>
           <td><input type="number" data-rt="${a.id}" value="${a.round_trips || ''}" min="0.5" step="0.5" style="width:60px" ${delivered ? '' : 'disabled'}></td>
+          <td>${usage(a, t)}</td>
           <td class="actions">
             <button class="secondary" data-maint="${a.id}" ${delivered && a.maintenance_until <= day && a.condition < 99 ? '' : 'disabled'} title="Przegląd trwa ${R.maintenanceDays} dni">Przegląd ${usd(a.maintenanceCost)}</button>
             ${a.leased ? '' : a.listing_id ? `<button class="secondary" data-unlist="${a.id}">Wycofaj ofertę</button>` : `<button class="secondary" data-list="${a.id}" ${delivered ? '' : 'disabled'}>Wystaw na rynek</button>`}
@@ -359,7 +368,7 @@ function fleet(el) {
         </tr>`;
       }).join('')}
     </table></div>
-    <p class="muted">Rotacja = lot tam i z powrotem. Fotel biznes zajmuje ${R.classSpace.j}, a pierwszej klasy ${R.classSpace.f} miejsca ekonomiczne. „Sprzedaj” sprzedaje od razu brokerowi, „Wystaw na rynek” pozwala ustalić własną cenę dla innych graczy.</p>` : '<p class="muted">Nie masz jeszcze samolotów. Zajrzyj do „Nowe samoloty” albo na „Rynek wtórny”.</p>'}
+    <p class="muted">Wykorzystanie to część z ${R.operatingHours} godzin na dobę, którą samolot spędza w locie i na obsłudze między lotami. Im bliżej 100%, tym lepiej zarabia. Rotacja = lot tam i z powrotem. Fotel biznes zajmuje ${R.classSpace.j}, a pierwszej klasy ${R.classSpace.f} miejsca ekonomiczne. „Sprzedaj” sprzedaje od razu brokerowi, „Wystaw na rynek” pozwala ustalić własną cenę dla innych graczy.</p>` : '<p class="muted">Nie masz jeszcze samolotów. Zajrzyj do „Nowe samoloty” albo na „Rynek wtórny”.</p>'}
   </div>`;
 
   $('#automaint').onchange = (e) => act(() => api('POST', '/api/airline/settings', { autoMaint: Number(e.target.value) }), 'Ustawienie zapisane');
