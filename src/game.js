@@ -298,6 +298,19 @@ export function companyValue(db, airline, day = currentDay(db)) {
   return airline.cash - airline.debt + fleet;
 }
 
+// Trasy jednego samolotu muszą tworzyć spójną sieć: każda styka się (wspólnym lotniskiem) z inną,
+// żeby samolot mógł je oblatywać bez przelotów na pusto. Zwraca grupy tras połączonych ze sobą.
+export function routeGroups(list) {
+  const groups = [];
+  for (const r of list) {
+    const touching = groups.filter((g) => g.some((x) => [x.origin, x.dest].some((ap) => ap === r.origin || ap === r.dest)));
+    const merged = [r, ...touching.flat()];
+    for (const g of touching) groups.splice(groups.indexOf(g), 1);
+    groups.push(merged);
+  }
+  return groups;
+}
+
 // Raport dnia: krótka informacja dla linii o tym, co się u niej wydarzyło.
 export function report(db, airlineId, day, kind, text) {
   db.prepare('INSERT INTO reports(airline_id, day, kind, text) VALUES (?, ?, ?, ?)').run(airlineId, day, kind, text);

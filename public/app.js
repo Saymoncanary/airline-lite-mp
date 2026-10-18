@@ -449,9 +449,14 @@ function fleet(el) {
         <button class="secondary small" data-unassign="${a.id}" data-rid="${r.id}" title="Zdejmij z tej trasy">✕</button></div>`;
     }).join('');
     const left = R.operatingHours - hoursUsed(a, t);
+    // Samolot może dołączyć tylko trasę, która ma wspólne lotnisko z jego obecnymi trasami.
+    const airports = new Set(a.flights.flatMap((f) => { const r = routeById(f.route_id); return [r.origin, r.dest]; }));
     const opts = routes.filter((r) => !a.flights.some((f) => f.route_id === r.id)).map((r) => {
-      const dist = distanceKm(r.origin, r.dest), max = maxRoundTrips(t, dist, left), ok = dist <= t.rangeKm && max > 0;
-      return `<option value="${r.id}" data-max="${max}" ${ok ? '' : 'disabled'}>${r.origin}–${r.dest}${dist > t.rangeKm ? ' (za daleko)' : ok ? ` (max ${max})` : ' (brak godzin)'}</option>`;
+      const dist = distanceKm(r.origin, r.dest), max = maxRoundTrips(t, dist, left);
+      const linked = !airports.size || airports.has(r.origin) || airports.has(r.dest);
+      const ok = dist <= t.rangeKm && max > 0 && linked;
+      const why = dist > t.rangeKm ? ' (za daleko)' : !linked ? ' (niepołączona z trasami samolotu)' : max > 0 ? ` (max ${max})` : ' (brak godzin)';
+      return `<option value="${r.id}" data-max="${max}" ${ok ? '' : 'disabled'}>${r.origin}–${r.dest}${why}</option>`;
     }).join('');
     const add = opts && delivered
       ? `<div class="flight"><select data-add="${a.id}"><option value="">${a.flights.length ? '+ dodaj trasę' : '— w hangarze —'}</option>${opts}</select>
@@ -501,7 +506,7 @@ function fleet(el) {
       }).join('')}
     </table></div>
     <p class="muted">Wykorzystanie to część z ${R.operatingHours} godzin na dobę, którą samolot spędza w locie i na obsłudze między lotami. Im bliżej 100%, tym lepiej zarabia.
-      Zysk samolotu to jego część przychodu z tras (według liczby miejsc, które na nich oferuje) minus jego koszty: paliwo, załoga, opłaty, obsługa pasażerów, koszty stałe, leasing i przeglądy. „Łącznie” liczy się od zakupu. Jeden samolot może latać na kilku trasach, dopóki starcza mu godzin. Rotacja = lot tam i z powrotem. Fotel biznes zajmuje ${R.classSpace.j}, a pierwszej klasy ${R.classSpace.f} miejsca ekonomiczne. „Sprzedaj” sprzedaje od razu brokerowi, „Wystaw na rynek” pozwala ustalić własną cenę dla innych graczy.</p>` : '<p class="muted">Nie masz jeszcze samolotów. Zajrzyj do „Nowe samoloty” albo na „Rynek wtórny”.</p>'}
+      Zysk samolotu to jego część przychodu z tras (według liczby miejsc, które na nich oferuje) minus jego koszty: paliwo, załoga, opłaty, obsługa pasażerów, koszty stałe, leasing i przeglądy. „Łącznie” liczy się od zakupu. Jeden samolot może latać na kilku trasach, dopóki starcza mu godzin, ale tylko na trasach połączonych ze sobą wspólnymi lotniskami (np. WAW–BER i BER–CDG). Rotacja = lot tam i z powrotem. Fotel biznes zajmuje ${R.classSpace.j}, a pierwszej klasy ${R.classSpace.f} miejsca ekonomiczne. „Sprzedaj” sprzedaje od razu brokerowi, „Wystaw na rynek” pozwala ustalić własną cenę dla innych graczy.</p>` : '<p class="muted">Nie masz jeszcze samolotów. Zajrzyj do „Nowe samoloty” albo na „Rynek wtórny”.</p>'}
   </div>`;
 
   $('#automaint').onchange = (e) => act(() => api('POST', '/api/airline/settings', { autoMaint: Number(e.target.value) }), 'Ustawienie zapisane');

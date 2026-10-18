@@ -6,7 +6,7 @@ import { AIRPORTS, AIRCRAFT_TYPES } from './data.js';
 import {
   RULES, CLASSES, MONTHS, LIVERY_LOGOS, ACHIEVEMENTS, achievementStats, isSlotAirport, slotCapacity, slotPrice, slotUsage, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, roundTripHours, leaseDaily, aircraftValue,
   seatMap, validSeatConfig, maintenanceCost, routePrices, seasonMult, gameMonth, activeEvents,
-  pairKey, tx, currentDay, addNews, companyValue, takeoverPrice, mergeAirlines, report, buyoutPrice,
+  pairKey, tx, currentDay, addNews, companyValue, takeoverPrice, mergeAirlines, report, buyoutPrice, routeGroups,
 } from './game.js';
 import {
   hashPassword, verifyPassword, createSession, userFromToken, destroySession,
@@ -343,9 +343,16 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       return { ok: true };
     }
     const r = db.prepare('SELECT * FROM routes WHERE id = ? AND airline_id = ?').get(Number(routeId), airline.id) || fail(404, 'Nie znaleziono trasy');
+    const others = db.prepare('SELECT r.id, r.origin, r.dest FROM flights f JOIN routes r ON r.id = f.route_id WHERE f.aircraft_id = ? AND f.route_id != ?').all(ac.id, r.id);
     if (roundTrips === 0) {
+      // Zdjęcie trasy nie może rozerwać sieci samolotu na dwie osobne części.
+      if (routeGroups(others).length > 1) fail(400, `Bez trasy ${r.origin}–${r.dest} pozostałe trasy tego samolotu nie byłyby połączone. Najpierw zdejmij trasy po jednej stronie.`);
       db.prepare('DELETE FROM flights WHERE aircraft_id = ? AND route_id = ?').run(ac.id, r.id);
       return { ok: true };
+    }
+    // Nowa trasa musi mieć wspólne lotnisko z którąś z tras, na których samolot już lata.
+    if (others.length && !others.some((x) => [x.origin, x.dest].some((ap) => ap === r.origin || ap === r.dest))) {
+      fail(400, `Samolot lata już na ${others.map((x) => `${x.origin}–${x.dest}`).join(', ')}. Trasa ${r.origin}–${r.dest} nie ma z nimi wspólnego lotniska, więc samolot nie może jej obsługiwać.`);
     }
     if (ac.delivery_day > currentDay(db)) fail(400, 'Ten samolot nie został jeszcze dostarczony');
     const t = AIRCRAFT_TYPES[ac.type_id];
@@ -577,8 +584,17 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     await readJson(ctx.req);
     const airline = requireAirline(ctx);
     tx(db, () => {
-      const r = db.prepare('DELETE FROM routes WHERE id = ? AND airline_id = ?').run(Number(ctx.params.id), airline.id);
+      const id = Number(ctx.params.id);
+      const planes = db.prepare('SELECT aircraft_id FROM flights WHERE route_id = ?').all(id).map((f) => f.aircraft_id);
+      const r = db.prepare('DELETE FROM routes WHERE id = ? AND airline_id = ?').run(id, airline.id);
       if (!r.changes) fail(404, 'Nie znaleziono trasy');
+      // Gdy zamknięta trasa łączyła dwie części sieci samolotu, zostaje on na większej części.
+      for (const acId of planes) {
+        const groups = routeGroups(db.prepare('SELECT r.id, r.origin, r.dest FROM flights f JOIN routes r ON r.id = f.route_id WHERE f.aircraft_id = ?').all(acId));
+        if (groups.length < 2) continue;
+        groups.sort((a, b) => b.length - a.length);
+        for (const g of groups.slice(1)) for (const x of g) db.prepare('DELETE FROM flights WHERE aircraft_id = ? AND route_id = ?').run(acId, x.id);
+      }
     });
     return { ok: true };
   });

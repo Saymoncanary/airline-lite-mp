@@ -541,3 +541,32 @@ test('raport dnia, terminale i codeshare', async () => {
   server.closeAllConnections();
   server.close();
 });
+
+test('samolot lata tylko na trasach połączonych ze sobą', async () => {
+  const { db, server, base } = await startServer();
+  const a = client(base);
+  await a('POST', '/api/register', { username: 'siatka', password: 'haslo1234' });
+  await a('POST', '/api/airline', { name: 'Siatka Air', code: 'SI', hub: 'WAW' });
+  await a('POST', '/api/bases', { airport: 'KRK' });
+  await a('POST', '/api/aircraft', { typeId: 'A320', mode: 'buy' });
+  for (let i = 0; i < 6; i++) runTick(db, calm);
+  const ac = (await a('GET', '/api/airline')).data.fleet[0].id;
+  const open = async (o, d) => (await a('POST', '/api/routes', { origin: o, dest: d })).data.id;
+  const ber = await open('WAW', 'BER'), prg = await open('WAW', 'PRG'), krkVie = await open('KRK', 'VIE'), krkPrg = await open('KRK', 'PRG');
+  const assign = (routeId, roundTrips) => a('POST', `/api/aircraft/${ac}/assign`, { routeId, roundTrips });
+  assert.equal((await assign(ber, 1)).status, 200);
+  const bad = await assign(krkVie, 1);
+  assert.equal(bad.status, 400);
+  assert.match(bad.data.error, /wspólnego lotniska/);
+  assert.equal((await assign(prg, 1)).status, 200);
+  assert.equal((await assign(krkPrg, 1)).status, 200); // przez PRG
+  assert.equal((await assign(krkVie, 1)).status, 200); // przez KRK
+  // Zdjęcie WAW–PRG rozerwałoby sieć BER–WAW | PRG–KRK–VIE.
+  assert.equal((await assign(prg, 0)).status, 400);
+  // Zamknięcie tej trasy zostawia samolot na większej części sieci.
+  assert.equal((await a('DELETE', `/api/routes/${prg}`)).status, 200);
+  const left = (await a('GET', '/api/airline')).data.fleet[0].flights.map((f) => f.route_id).sort();
+  assert.deepEqual(left, [krkPrg, krkVie].sort());
+  server.closeAllConnections();
+  server.close();
+});
