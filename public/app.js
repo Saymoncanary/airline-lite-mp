@@ -441,7 +441,8 @@ function fleet(el) {
       return `<option value="${r.id}" data-max="${max}" ${ok ? '' : 'disabled'}>${r.origin}–${r.dest}${dist > t.rangeKm ? ' (za daleko)' : ok ? ` (max ${max})` : ' (brak godzin)'}</option>`;
     }).join('');
     const add = opts && delivered
-      ? `<select data-add="${a.id}"><option value="">${a.flights.length ? '+ dodaj trasę' : '— w hangarze —'}</option>${opts}</select>`
+      ? `<div class="flight"><select data-add="${a.id}"><option value="">${a.flights.length ? '+ dodaj trasę' : '— w hangarze —'}</option>${opts}</select>
+          <input type="number" data-addn="${a.id}" min="0.5" step="0.5" placeholder="max" title="Ile rotacji dziennie (puste = najwięcej, ile się zmieści)" style="width:62px"></div>`
       : a.flights.length ? '' : '<span class="muted">— w hangarze —</span>';
     return lines + add;
   };
@@ -492,8 +493,15 @@ function fleet(el) {
   $('#automaint').onchange = (e) => act(() => api('POST', '/api/airline/settings', { autoMaint: Number(e.target.value) }), 'Ustawienie zapisane');
   const assign = (id, routeId, roundTrips) =>
     act(() => api('POST', `/api/aircraft/${id}/assign`, { routeId, roundTrips }), roundTrips === 0 ? 'Samolot zdjęty z trasy' : 'Samolot przypisany');
+  // Nowa trasa: wybrana liczba rotacji (albo maksimum); serwer zmniejszy ją, jeśli brakuje slotów.
   el.querySelectorAll('[data-add]').forEach((s) => (s.onchange = () => {
-    if (s.value) assign(s.dataset.add, Number(s.value), Number(s.selectedOptions[0].dataset.max));
+    if (!s.value) return;
+    const typed = Number(el.querySelector(`[data-addn="${s.dataset.add}"]`).value);
+    const max = Number(s.selectedOptions[0].dataset.max);
+    act(async () => {
+      const r = await api('POST', `/api/aircraft/${s.dataset.add}/assign`, { routeId: Number(s.value), roundTrips: typed > 0 ? Math.min(typed, max) : max, fit: true });
+      toast(`Samolot przypisany (rotacje dziennie: ${r.roundTrips})${r.reduced ? '. Na więcej brakuje slotów lub godzin.' : ''}`);
+    });
   }));
   el.querySelectorAll('[data-rt]').forEach((i) => (i.onchange = () => assign(i.dataset.rt, Number(i.dataset.rid), Number(i.value) || 0)));
   el.querySelectorAll('[data-unassign]').forEach((b) => (b.onclick = () => assign(b.dataset.unassign, Number(b.dataset.rid), 0)));

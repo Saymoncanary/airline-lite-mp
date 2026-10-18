@@ -443,3 +443,23 @@ test('odporność API na dziwne dane', async () => {
   server.closeAllConnections();
   server.close();
 });
+
+test('przypisanie z dopasowaniem do wolnych slotów', async () => {
+  const { db, server, base } = await startServer();
+  const a = client(base);
+  await a('POST', '/api/register', { username: 'slocik', password: 'haslo1234' });
+  await a('POST', '/api/airline', { name: 'Slot Air', code: 'SL', hub: 'WAW' });
+  await a('POST', '/api/aircraft', { typeId: 'A320', mode: 'buy' });
+  for (let i = 0; i < 6; i++) runTick(db, calm);
+  const ac = (await a('GET', '/api/airline')).data.fleet[0].id;
+  const rid = (await a('POST', '/api/routes', { origin: 'WAW', dest: 'LHR' })).data.id;
+  assert.equal((await a('POST', '/api/slots', { airport: 'LHR', count: 2 })).status, 200);
+  const max = maxRoundTrips(AIRCRAFT_TYPES.A320, distanceKm('WAW', 'LHR'));
+  assert.ok(max > 2);
+  assert.equal((await a('POST', `/api/aircraft/${ac}/assign`, { routeId: rid, roundTrips: max })).status, 400);
+  const r = (await a('POST', `/api/aircraft/${ac}/assign`, { routeId: rid, roundTrips: max, fit: true })).data;
+  assert.deepEqual([r.roundTrips, r.reduced], [2, true]);
+  assert.equal((await a('GET', '/api/airline')).data.fleet[0].flights[0].round_trips, 2);
+  server.closeAllConnections();
+  server.close();
+});

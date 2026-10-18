@@ -329,7 +329,8 @@ export function createApp({ db, clock = null, secureCookies = false }) {
   // Ustawia liczbę rotacji samolotu na jednej trasie (0 = zdejmuje go z tej trasy).
   // routeId = null zdejmuje samolot ze wszystkich tras.
   on('POST', '/api/aircraft/:id/assign', async (ctx) => {
-    const { routeId, roundTrips } = await readJson(ctx.req);
+    // fit = true: gdy brakuje godzin albo slotów, przypisz tyle rotacji, ile się zmieści.
+    const { routeId, roundTrips, fit = false } = await readJson(ctx.req);
     const airline = requireAirline(ctx);
     const ac = myAircraft(ctx, airline);
     if (routeId == null) {
@@ -349,17 +350,24 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       .all(ac.id, r.id).reduce((h, f) => h + f.round_trips * roundTripHours(t, distanceKm(f.origin, f.dest)), 0);
     const max = maxRoundTrips(t, dist, RULES.operatingHours - usedHours);
     if (!max) fail(400, 'Ten samolot nie ma już wolnych godzin na tę trasę');
-    const n = Number(roundTrips ?? max);
-    if (!(n > 0 && n <= max && (Number.isInteger(n) || n === 0.5))) fail(400, `Liczba rotacji dziennie na tej trasie: od ${max < 1 ? 0.5 : 1} do ${max}`);
-    const need = slotUsage(db, airline.id, { aircraft_id: ac.id, route_id: r.id, round_trips: n, origin: r.origin, dest: r.dest });
+    let n = Number(roundTrips ?? max);
+    const valid = (x) => x > 0 && (Number.isInteger(x) || x === 0.5);
+    if (fit && valid(n) && n > max) n = max;
+    if (!(valid(n) && n <= max)) fail(400, `Liczba rotacji dziennie na tej trasie: od ${max < 1 ? 0.5 : 1} do ${max}`);
+    const have = (ap) => db.prepare('SELECT count FROM slots WHERE airline_id = ? AND airport = ?').get(airline.id, ap)?.count || 0;
+    const need = (x) => slotUsage(db, airline.id, { aircraft_id: ac.id, route_id: r.id, round_trips: x, origin: r.origin, dest: r.dest });
+    const slotOk = (x) => [r.origin, r.dest].every((ap) => !isSlotAirport(ap) || need(x).get(ap) <= have(ap));
+    const wanted = n;
+    // Za mało slotów: przy fit schodzimy do największej liczby rotacji, na którą starcza slotów.
+    if (fit) while (n > 0.5 && !slotOk(n)) n = n > 1 ? n - 1 : 0.5;
     for (const ap of [r.origin, r.dest]) {
-      if (!isSlotAirport(ap)) continue;
-      const have = db.prepare('SELECT count FROM slots WHERE airline_id = ? AND airport = ?').get(airline.id, ap)?.count || 0;
-      if (need.get(ap) > have) fail(400, `Brak slotów na lotnisku ${ap}: masz ${have}, potrzeba ${need.get(ap)}. Kup sloty w zakładce „Trasy”.`);
+      if (isSlotAirport(ap) && need(n).get(ap) > have(ap)) {
+        fail(400, `Brak slotów na lotnisku ${ap}: masz ${have(ap)}, potrzeba ${need(n).get(ap)}. Kup sloty w zakładce „Trasy”.`);
+      }
     }
     db.prepare('INSERT INTO flights(aircraft_id, route_id, round_trips) VALUES (?, ?, ?) ON CONFLICT(aircraft_id, route_id) DO UPDATE SET round_trips = excluded.round_trips')
       .run(ac.id, r.id, n);
-    return { ok: true };
+    return { ok: true, roundTrips: n, reduced: n < wanted };
   });
 
   on('POST', '/api/aircraft/:id/config', async (ctx) => {
