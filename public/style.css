@@ -17,7 +17,7 @@ a { color: var(--accent); }
 .brand { font-weight: 700; font-size: 18px; letter-spacing: .3px; }
 #topinfo { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 14px; }
 #topinfo b { color: var(--text); }
-main { max-width: 1150px; margin: 0 auto; padding: 16px; }
+main { max-width: 1800px; margin: 0 auto; padding: 16px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
 .card h2, .card h3 { margin: 0 0 12px; }
 .auth { max-width: 380px; margin: 40px auto; }
@@ -40,7 +40,8 @@ label input, label select { display: block; width: 100%; margin-top: 4px; color:
 .stat .v { font-size: 22px; font-weight: 700; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { white-space: normal; vertical-align: bottom; }
 th { color: var(--muted); font-weight: 600; }
 th.group { color: var(--text); padding-top: 18px; font-size: 15px; }
 .pos { color: var(--good); } .neg { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--muted); }
@@ -60,3 +61,9 @@ td.actions { display: flex; gap: 6px; flex-wrap: wrap; }
 #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); padding: 10px 16px; border-radius: 8px; max-width: calc(100% - 32px); }
 #toast.err { border-color: var(--bad); }
 .leaflet-container { background: #0b1626; }
+@media (max-width: 1200px) {
+  main { padding: 10px; }
+  table { font-size: 13px; }
+  th, td { padding: 5px 4px; }
+  td input, td select { padding: 5px 6px; }
+}
