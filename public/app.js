@@ -1,6 +1,6 @@
 'use strict';
 
-const state = { me: null, st: null, data: null, tab: 'dashboard', map: null, chatTimer: null };
+const state = { me: null, st: null, data: null, tab: 'dashboard', map: null, chatTimer: null, routeCountry: 'Polska' };
 const $ = (sel) => document.querySelector(sel);
 const view = () => $('#view');
 
@@ -19,6 +19,11 @@ const REGIONS = ['Polska', 'Europa Zachodnia', 'Europa Południowa', 'Europa Śr
   'Rosja i Azja Centralna', 'Bliski Wschód', 'Afryka', 'Azja Południowa', 'Azja Wschodnia', 'Azja Południowo-Wschodnia', 'Oceania',
   'Ameryka Północna', 'Karaiby i Ameryka Środkowa', 'Ameryka Południowa'];
 // Lista lotnisk pogrupowana według regionów świata.
+// Kraje do wyboru celu trasy: Polska na początku, reszta alfabetycznie.
+function countries() {
+  const all = [...new Set(state.st.airports.map((a) => a.country))].sort((a, b) => a.localeCompare(b, 'pl'));
+  return ['Polska', ...all.filter((c) => c !== 'Polska')];
+}
 function airportOptions({ selected, filter = () => true, label = (a) => `${esc(a.city)} (${a.code})` } = {}) {
   return REGIONS.map((r) => {
     const list = state.st.airports.filter((a) => a.region === r && filter(a));
@@ -245,7 +250,8 @@ function routesTab(el) {
     <div class="card"><h3>Otwórz nową trasę</h3>
       <div class="row">
         <label>Skąd (baza)<select id="r-origin">${bases.map((b) => `<option value="${b}">${esc(apLabel(b))}</option>`).join('')}</select></label>
-        <label>Dokąd<select id="r-dest">${airportOptions({ label: (a) => `${esc(a.city)} (${a.code}) · ${a.size}/10` })}</select></label>
+        <label>Kraj<select id="r-country">${countries().map((c) => `<option ${c === state.routeCountry ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+        <label>Miasto<select id="r-dest"></select></label>
         ${CLS.map(([c, n]) => `<label>Cena: ${n}<input id="r-price-${c}" type="number" min="10" style="width:100px"></label>`).join('')}
         <button id="r-open">Otwórz trasę</button>
       </div>
@@ -281,9 +287,16 @@ function routesTab(el) {
         ${m.competitors.length ? `<br>Konkurencja: ${m.competitors.map((c) => `${esc(c.name)} ($${c.prices.y} / $${c.prices.j} / $${c.prices.f}, ${c.seats} miejsc/dzień)`).join(', ')}` : '<br>Brak konkurencji na tej trasie.'}`;
     } catch (e) { $('#r-market').textContent = e.message; }
   };
+  const fillCities = () => {
+    state.routeCountry = $('#r-country').value;
+    $('#r-dest').innerHTML = state.st.airports.filter((a) => a.country === state.routeCountry)
+      .map((a) => `<option value="${a.code}">${esc(a.city)} (${a.code}) · rynek ${a.size}/10</option>`).join('');
+    showMarket();
+  };
+  $('#r-country').onchange = fillCities;
   $('#r-origin').onchange = showMarket;
   $('#r-dest').onchange = showMarket;
-  showMarket();
+  fillCities();
   const val = (c) => Number($(`#r-price-${c}`).value) || undefined;
   $('#r-open').onclick = () => act(() => api('POST', '/api/routes', { origin: $('#r-origin').value, dest: $('#r-dest').value, price: val('y'), price_j: val('j'), price_f: val('f') }), 'Trasa otwarta. Przypisz do niej samolot we Flocie.');
   const key = { y: 'price', j: 'price_j', f: 'price_f' };
