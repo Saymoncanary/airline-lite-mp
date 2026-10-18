@@ -602,7 +602,8 @@ export function runTick(db, rng = Math.random) {
     }
 
     for (const al of airlines.values()) {
-      grantAchievements(db, db.prepare('SELECT * FROM airlines WHERE id = ?').get(al.id), day, { profit: al.profit });
+      const fresh = db.prepare('SELECT a.* FROM airlines a JOIN users u ON u.id = a.user_id WHERE a.id = ? AND u.is_bot = 0').get(al.id);
+      if (fresh) grantAchievements(db, fresh, day, { profit: al.profit });
     }
     refillUsedMarket(db, day, rng);
     db.prepare('DELETE FROM events WHERE end_day < ?').run(day - 30);

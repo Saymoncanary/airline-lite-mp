@@ -644,7 +644,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
   on('GET', '/api/leaderboard', () => {
     const day = currentDay(db);
     const rows = db.prepare(
-      `SELECT a.*, u.username, al.name AS alliance,
+      `SELECT a.*, u.username, u.is_bot, al.name AS alliance,
         (SELECT COUNT(*) FROM aircraft WHERE airline_id = a.id) AS fleet,
         (SELECT COUNT(*) FROM routes WHERE airline_id = a.id) AS routes,
         (SELECT COALESCE(SUM(last_pax), 0) FROM routes WHERE airline_id = a.id) AS pax
@@ -652,7 +652,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
        LEFT JOIN alliance_members m ON m.airline_id = a.id LEFT JOIN alliances al ON al.id = m.alliance_id`
     ).all();
     return rows
-      .map((a) => ({ name: a.name, code: a.code, color1: a.color1, color2: a.color2, logo: a.logo, owner: a.username, hub: a.hub, alliance: a.alliance, reputation: a.reputation, fleet: a.fleet, routes: a.routes, pax: a.pax, value: companyValue(db, a, day) }))
+      .map((a) => ({ name: a.name, code: a.code, bot: !!a.is_bot, color1: a.color1, color2: a.color2, logo: a.logo, owner: a.username, hub: a.hub, alliance: a.alliance, reputation: a.reputation, fleet: a.fleet, routes: a.routes, pax: a.pax, value: companyValue(db, a, day) }))
       .sort((x, y) => y.value - x.value);
   });
 

@@ -290,3 +290,27 @@ test('personel, obsługa, reklama i program lojalnościowy', async () => {
   server.closeAllConnections();
   server.close();
 });
+
+test('komputerowi rywale rozwijają swoje linie', async () => {
+  const { ensureBots, runBots } = await import('../src/bots.js');
+  const { tx, currentDay } = await import('../src/game.js');
+  const db = openDb(':memory:');
+  tx(db, () => ensureBots(db, 3, 0));
+  tx(db, () => ensureBots(db, 3, 0)); // drugi raz nic nie dodaje
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM airlines').get().n, 3);
+  let seed = 7;
+  const rng = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < 120; i++) {
+    tx(db, () => runBots(db, currentDay(db) + 1, rng));
+    runTick(db, rng);
+  }
+  for (const al of db.prepare('SELECT * FROM airlines').all()) {
+    const fleet = db.prepare('SELECT COUNT(*) AS n FROM aircraft WHERE airline_id = ?').get(al.id).n;
+    const pax = db.prepare('SELECT COALESCE(SUM(last_pax), 0) AS n FROM routes WHERE airline_id = ?').get(al.id).n;
+    assert.ok(fleet >= 2, `${al.name}: flota ${fleet}`);
+    assert.ok(pax > 0, `${al.name}: brak pasażerów`);
+    assert.ok(al.cash > 0, `${al.name}: gotówka ${al.cash}`);
+  }
+  // Na konto bota nie da się zalogować (pusty hash hasła).
+  assert.equal(db.prepare("SELECT pass_hash FROM users WHERE username = 'bot-ES'").get().pass_hash, '');
+});

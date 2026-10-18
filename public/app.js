@@ -791,7 +791,7 @@ async function ranking(el) {
   const mine = state.data.airline.code;
   el.innerHTML = `<div class="card"><h3>Ranking linii lotniczych</h3><div class="table-wrap"><table>
     <tr><th>#</th><th>Linia</th><th>Gracz</th><th>Sojusz</th><th>Hub</th><th>Wartość firmy</th><th>Flota</th><th>Trasy</th><th>Pasażerowie/dzień</th><th>Reputacja</th></tr>
-    ${rows.map((r, i) => `<tr class="${r.code === mine ? 'me' : ''}"><td>${i + 1}</td><td>${badge(r)} ${esc(r.name)} (${esc(r.code)})</td><td>${esc(r.owner)}</td><td>${esc(r.alliance || '—')}</td><td>${r.hub}</td>
+    ${rows.map((r, i) => `<tr class="${r.code === mine ? 'me' : ''}"><td>${i + 1}</td><td>${badge(r)} ${esc(r.name)} (${esc(r.code)})</td><td>${r.bot ? '<span class="muted">🤖 komputer</span>' : esc(r.owner)}</td><td>${esc(r.alliance || '—')}</td><td>${r.hub}</td>
       <td><b>${usd(r.value)}</b></td><td>${r.fleet}</td><td>${r.routes}</td><td>${r.pax.toLocaleString('pl-PL')}</td><td>${r.reputation.toFixed(1)}</td></tr>`).join('')}
   </table></div></div>
   ${alliances.length ? `<div class="card"><h3>Ranking sojuszy</h3><div class="table-wrap"><table>
