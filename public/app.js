@@ -512,7 +512,8 @@ function shop(el) {
     <td class="plane-cell">${planePhoto(t)}</td><td><b>${esc(t.name)}</b><div class="muted">${esc(t.maker)}</div></td><td>${t.seats}</td><td>${t.rangeKm.toLocaleString('pl-PL')} km</td><td>${t.speed} km/h</td>
     <td>$${t.costPerKm}</td><td>${usd(t.dailyFixed)}</td><td>${R.deliveryDays[t.cat]} dni</td><td>${usd(t.price)}</td>
     <td>${usd(t.price * R.leaseDepositPct)} na start<br><span class="muted">+ ${usd(t.price * R.leaseDailyPct)}/dzień</span></td>
-    <td><button data-buy="${t.id}" ${cash < t.price ? 'disabled title="Za mało gotówki"' : ''}>Zamów</button> <button class="secondary" data-lease="${t.id}">Leasing</button></td>
+    <td><div class="order"><label class="qty">Sztuk <input type="number" min="1" max="${R.maxOrder}" value="1" data-qty="${t.id}"></label>
+      <button data-buy="${t.id}" ${cash < t.price ? 'disabled title="Za mało gotówki"' : ''}>Zamów</button> <button class="secondary" data-lease="${t.id}">Leasing</button></div></td>
   </tr>`;
   el.innerHTML = `<div class="card"><h3>Zamów nowy samolot u producenta</h3>
     <nav class="tabs makers">
@@ -533,9 +534,20 @@ function shop(el) {
   loadPlanePhotos(el);
   $('#f-cat').onchange = (e) => { f.cat = e.target.value; shop(el); };
   el.querySelectorAll('[data-maker]').forEach((b) => (b.onclick = () => { f.maker = b.dataset.maker; shop(el); }));
+  const qty = (id) => Math.min(R.maxOrder, Math.max(1, Math.round(Number(el.querySelector(`[data-qty="${id}"]`).value) || 1)));
+  // Przyciski pokazują łączny koszt dla wybranej liczby samolotów.
+  const updateRow = (id) => {
+    const t = type(id), n = qty(id), buy = el.querySelector(`[data-buy="${id}"]`), lease = el.querySelector(`[data-lease="${id}"]`);
+    buy.textContent = n > 1 ? `Zamów ${n} · ${usd(t.price * n)}` : 'Zamów';
+    lease.textContent = n > 1 ? `Leasing ${n} · ${usd(t.price * R.leaseDepositPct * n)}` : 'Leasing';
+    buy.disabled = cash < t.price * n;
+    buy.title = buy.disabled ? 'Za mało gotówki' : '';
+  };
+  el.querySelectorAll('[data-qty]').forEach((i) => (i.oninput = () => updateRow(i.dataset.qty)));
   const order = async (typeId, mode) => {
-    const r = await api('POST', '/api/aircraft', { typeId, mode });
-    toast(`Zamówione! Samolot przyleci za ${r.deliveryDays} dni gry.`);
+    const r = await api('POST', '/api/aircraft', { typeId, mode, count: qty(typeId) });
+    const few = r.count % 10 >= 2 && r.count % 10 <= 4 && (r.count % 100 < 12 || r.count % 100 > 14);
+    toast(r.count > 1 ? `Zamówiono ${r.count} ${few ? 'samoloty' : 'samolotów'}! Przylecą za ${r.deliveryDays} dni gry.` : `Zamówione! Samolot przyleci za ${r.deliveryDays} dni gry.`);
   };
   el.querySelectorAll('[data-buy]').forEach((b) => (b.onclick = () => act(() => order(b.dataset.buy, 'buy'))));
   el.querySelectorAll('[data-lease]').forEach((b) => (b.onclick = () => act(() => order(b.dataset.lease, 'lease'))));

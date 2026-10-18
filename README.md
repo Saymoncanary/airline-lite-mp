@@ -32,7 +32,7 @@ Zmienne środowiskowe:
 - Na start linia dostaje **$200 mln** i jedną bazę (hub).
 - **Lotniska**: 416 lotnisk z całego świata, pogrupowanych według regionów. Wielkość rynku (1-10) decyduje o popycie.
 - **Samoloty**: 36 typów od 9 producentów. Nowe samoloty się **zamawia** i przylatują po kilku dniach gry
-  (turbośmigłowe 3, regionalne 4, wąskokadłubowe 5, szerokokadłubowe 8). Zakup = pełna cena, leasing = 5% na start i dzienna rata.
+  (turbośmigłowe 3, regionalne 4, wąskokadłubowe 5, szerokokadłubowe 8). Zakup = pełna cena, leasing = 5% na start i dzienna rata. Jednego typu można zamówić lub wziąć w leasing do 20 sztuk naraz.
 - **Rynek wtórny**: broker wystawia używane samoloty (tańsze, od ręki, ale starsze i zużyte), a gracze sprzedają tam
   swoje maszyny innym graczom za własną cenę.
 - **Klasy podróży**: ekonomiczna, biznes i pierwsza. Każdy samolot ma własny układ foteli (fotel biznes zajmuje 2 miejsca

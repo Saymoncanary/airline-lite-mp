@@ -44,6 +44,7 @@ export const RULES = {
   // ograniczona dla wszystkich linii razem, a cena rośnie, im mniej ich zostało.
   slotMinSize: 9, slotCapacity: { 9: 60, 10: 40 }, slotBasePrice: { 9: 1e6, 10: 1.5e6 }, slotSellBack: 0.5,
   hubFreeSlots: 10, // darmowe sloty dla nowej linii z bazą na takim lotnisku
+  maxOrder: 20, // ile samolotów jednego typu można zamówić naraz
   takeoverPremium: 1.3, // cena przejęcia: wartość firmy × premia + dopłata za każdą trasę
   takeoverPerRoute: 1e6,
   takeoverMin: 10e6,

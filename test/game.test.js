@@ -428,6 +428,15 @@ test('odporność API na dziwne dane', async () => {
   await c('POST', '/api/register', { username: 'dziwny', password: 'haslo1234' });
   await c('POST', '/api/airline', { name: 'Dziwna Linia', code: 'DZ', hub: 'WAW' });
   assert.equal((await c('POST', '/api/aircraft', { typeId: '__proto__', mode: 'buy' })).status, 400);
+  // Kilka samolotów naraz: jedna płatność w dzienniku, każdy samolot osobno we flocie.
+  assert.equal((await c('POST', '/api/aircraft', { typeId: 'ATR72', mode: 'lease', count: 0 })).status, 400);
+  assert.equal((await c('POST', '/api/aircraft', { typeId: 'ATR72', mode: 'lease', count: 2.5 })).status, 400);
+  assert.equal((await c('POST', '/api/aircraft', { typeId: 'ATR72', mode: 'buy', count: 3 })).data.count, 3);
+  const d = (await c('GET', '/api/airline')).data;
+  assert.equal(d.fleet.length, 3);
+  assert.equal(d.airline.cash, RULES.startingCash - 3 * AIRCRAFT_TYPES.ATR72.price);
+  assert.equal((await c('POST', '/api/aircraft', { typeId: 'A359', mode: 'buy', count: 20 })).status, 400); // za mało pieniędzy
+  assert.equal((await c('GET', '/api/airline')).data.fleet.length, 3);
   assert.equal((await c('GET', '/api/airport/%E0')).status, 400);
   const bad = await fetch(base + '/api/me', { headers: { cookie: 'x=%zz' } });
   assert.equal(bad.status, 200);

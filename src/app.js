@@ -310,18 +310,20 @@ export function createApp({ db, clock = null, secureCookies = false }) {
 
   // Nowe samoloty się zamawia: przylatują po kilku dniach gry, zależnie od wielkości.
   on('POST', '/api/aircraft', async (ctx) => {
-    const { typeId, mode } = await readJson(ctx.req);
+    const { typeId, mode, count = 1 } = await readJson(ctx.req);
     const t = (typeof typeId === 'string' && Object.hasOwn(AIRCRAFT_TYPES, typeId) && AIRCRAFT_TYPES[typeId]) || fail(400, 'Nieznany typ samolotu');
     if (!['buy', 'lease'].includes(mode)) fail(400, 'Tryb: buy lub lease');
+    if (!Number.isInteger(count) || count < 1 || count > RULES.maxOrder) fail(400, `Liczba samolotów: 1-${RULES.maxOrder}`);
     const day = currentDay(db);
     const delivery = day + RULES.deliveryDays[t.cat];
     tx(db, () => {
       const airline = requireAirline(ctx);
-      spend(airline, mode === 'buy' ? t.price : t.price * RULES.leaseDepositPct, `${mode === 'buy' ? 'Zakup' : 'Leasing (wpłata)'}: ${t.name}`);
-      db.prepare('INSERT INTO aircraft(airline_id, type_id, leased, acquired_day, delivery_day) VALUES (?, ?, ?, ?, ?)')
-        .run(airline.id, t.id, mode === 'lease' ? 1 : 0, delivery, delivery);
+      const each = mode === 'buy' ? t.price : t.price * RULES.leaseDepositPct;
+      spend(airline, each * count, `${mode === 'buy' ? 'Zakup' : 'Leasing (wpłata)'}: ${count > 1 ? `${count}× ` : ''}${t.name}`);
+      const ins = db.prepare('INSERT INTO aircraft(airline_id, type_id, leased, acquired_day, delivery_day) VALUES (?, ?, ?, ?, ?)');
+      for (let i = 0; i < count; i++) ins.run(airline.id, t.id, mode === 'lease' ? 1 : 0, delivery, delivery);
     });
-    return { ok: true, deliveryDays: delivery - day };
+    return { ok: true, count, deliveryDays: delivery - day };
   });
 
   // Ustawia liczbę rotacji samolotu na jednej trasie (0 = zdejmuje go z tej trasy).

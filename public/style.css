@@ -97,3 +97,7 @@ label.check { display: flex; align-items: center; gap: 8px; color: var(--text); 
 #ap-stats h3 .muted { font-weight: normal; font-size: 14px; }
 .leaflet-interactive { cursor: pointer; }
 td.nowrap { white-space: nowrap; }
+.order { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.order button { white-space: nowrap; }
+label.qty { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 0; }
+label.qty input { width: 60px; }
