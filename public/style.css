@@ -109,3 +109,10 @@ label.qty input { width: 60px; }
 .report .r-loss, .report .r-breakdown, .report .r-strike { color: #fca5a5; }
 .report .r-gain, .report .r-achievement { color: #86efac; }
 .report .r-offer, .report .r-codeshare, .report .r-rival { color: #fcd34d; }
+.todo ul { list-style: none; margin: 0; padding: 0; }
+.todo li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.todo li.warn span { color: var(--warn); }
+.todo li.neg span { color: #fca5a5; }
+.route-planes { min-width: 230px; }
+.route-planes select { max-width: 260px; }
+.fleet-filters { align-items: flex-end; margin-bottom: 10px; }

@@ -90,6 +90,46 @@ function maxRoundTrips(t, dist, hoursLeft = state.st.rules.operatingHours) {
   return n >= 1 ? n : rt / 2 <= hoursLeft + 1e-9 ? 0.5 : 0;
 }
 
+// --- Samoloty na trasach (wspólne dla Floty, Tras i Pulpitu) -----------------
+const routeById = (id) => state.data.routes.find((r) => r.id === id);
+// Godziny na dobę, które samolot spędza na swoich trasach (bez trasy `skip`).
+function hoursUsed(a, skip) {
+  const t = type(a.type_id);
+  return a.flights.reduce((h, f) => {
+    const r = routeById(f.route_id);
+    return r && f.route_id !== skip ? h + f.round_trips * roundTripHours(t, distanceKm(r.origin, r.dest)) : h;
+  }, 0);
+}
+const usagePct = (a) => Math.round((hoursUsed(a) / state.st.rules.operatingHours) * 100);
+// Ile rotacji dziennie samolot może dołożyć na trasie origin–dest (0 = nie może na niej latać):
+// musi być dostarczony, mieć zasięg i wolne godziny, a trasa musi mieć wspólne lotnisko z jego trasami.
+function addableTrips(a, origin, dest) {
+  if (a.delivery_day > state.data.day || a.listing_id) return 0;
+  const t = type(a.type_id), dist = distanceKm(origin, dest);
+  if (dist > t.rangeKm) return 0;
+  const airports = new Set(a.flights.flatMap((f) => { const r = routeById(f.route_id); return r ? [r.origin, r.dest] : []; }));
+  if (airports.size && !airports.has(origin) && !airports.has(dest)) return 0;
+  return maxRoundTrips(t, dist, state.st.rules.operatingHours - hoursUsed(a));
+}
+const planeName = (a) => `${esc(type(a.type_id).name)} #${a.id}`;
+// Przypisanie nowej trasy: wpisana liczba rotacji (albo maksimum); serwer zmniejszy ją, jeśli brakuje slotów.
+async function addFlight(planeId, routeId, max, typed) {
+  const r = await api('POST', `/api/aircraft/${planeId}/assign`, { routeId, roundTrips: typed > 0 ? Math.min(typed, max) : max, fit: true });
+  toast(`Samolot przypisany (rotacje dziennie: ${r.roundTrips})${r.reduced ? '. Na więcej brakuje slotów lub godzin.' : ''}`);
+}
+// Pole rotacji i przycisk zdjęcia samolotu z trasy (w wierszu Floty i Tras).
+const flightControls = (a, r, f) => {
+  const max = maxRoundTrips(type(a.type_id), distanceKm(r.origin, r.dest), state.st.rules.operatingHours - hoursUsed(a, r.id));
+  return `<input type="number" data-rt="${a.id}" data-rid="${r.id}" value="${f.round_trips}" min="0.5" max="${max}" step="0.5" style="width:56px" title="Rotacje dziennie (max ${max})">
+    <button class="secondary small" data-unassign="${a.id}" data-rid="${r.id}" title="Zdejmij z tej trasy">✕</button>`;
+};
+function wireFlightControls(el) {
+  const assign = (id, routeId, roundTrips) =>
+    act(() => api('POST', `/api/aircraft/${id}/assign`, { routeId, roundTrips }), roundTrips === 0 ? 'Samolot zdjęty z trasy' : 'Rotacje zmienione');
+  el.querySelectorAll('[data-rt]').forEach((i) => (i.onchange = () => assign(i.dataset.rt, Number(i.dataset.rid), Number(i.value) || 0)));
+  el.querySelectorAll('[data-unassign]').forEach((b) => (b.onclick = () => assign(b.dataset.unassign, Number(b.dataset.rid), 0)));
+}
+
 // --- Start -----------------------------------------------------------------
 async function boot() {
   const st = await api('GET', '/api/static');
@@ -268,6 +308,7 @@ function dashboard(el) {
   const seasonPct = Math.round((world.season - 1) * 100);
   const avgCond = fleet.length ? fleet.reduce((s, a) => s + a.condition, 0) / fleet.length : 100;
   el.innerHTML = `
+    ${todoCard()}
     ${dailyReport(state.data.reports, day)}
     <div class="card"><div class="grid">
       <div class="stat"><div class="k">Gotówka</div><div class="v">${usd(airline.cash)}</div></div>
@@ -294,6 +335,11 @@ function dashboard(el) {
     ${state.data.takeoverOffers ? '<div class="card offer-alert" id="dash-offers"></div>' : ''}
     ${fleet.length === 0 ? '<div class="card"><b>Pierwsze kroki:</b> 1) zamów samolot w „Nowe samoloty” albo kup używany na „Rynku wtórnym”, 2) otwórz trasę ze swojej bazy w zakładce „Trasy”, 3) gdy samolot dotrze, przypisz go do trasy we „Flocie”.</div>' : ''}
     <div class="card"><h3>Wiadomości ze świata lotnictwa</h3><ul class="news" id="news"><li class="muted">Ładowanie…</li></ul></div>`;
+  el.querySelectorAll('[data-todo]').forEach((b) => (b.onclick = () => {
+    const it = todoCard.items[Number(b.dataset.todo)];
+    if (it.view) state.fleetView = { type: '', sort: 'id', ...it.view };
+    state.tab = it.tab; renderMain(); window.scrollTo(0, 0);
+  }));
   if (state.data.takeoverOffers) {
     // Ostatnio pobrane oferty pokazujemy od razu, żeby przyciski nie znikały przy każdym odświeżeniu.
     if (state.incoming) takeoverIncoming($('#dash-offers'), state.incoming);
@@ -303,6 +349,34 @@ function dashboard(el) {
     const n = $('#news');
     if (n) n.innerHTML = rows.map((r) => `<li><span class="muted">${gameDate(r.day)}:</span> ${esc(r.text)}</li>`).join('') || '<li class="muted">Cisza w eterze.</li>';
   });
+}
+
+// „Do załatwienia”: sprawy wymagające decyzji gracza, z przejściem do właściwej zakładki.
+function todoCard() {
+  const { fleet, routes, day, airline } = state.data;
+  const ready = fleet.filter((a) => a.delivery_day <= day && !a.listing_id);
+  const list = (xs, f) => xs.slice(0, 4).map(f).join(', ') + (xs.length > 4 ? ` i ${xs.length - 4} więcej` : '');
+  const items = [];
+  const add = (cls, text, tab, view) => items.push({ cls, text, tab, view });
+  const idle = ready.filter((a) => !a.flights.length && a.maintenance_until <= day);
+  if (idle.length) add('warn', `Samoloty bez tras (stoją w hangarze): ${list(idle, planeName)}.`, 'fleet', { status: 'idle' });
+  const empty = routes.filter((r) => !fleet.some((a) => a.flights.some((f) => f.route_id === r.id)));
+  if (empty.length) add('warn', `Trasy bez samolotu: ${list(empty, (r) => `${r.origin}–${r.dest}`)}.`, 'routes');
+  const losingRoutes = routes.filter((r) => r.last_revenue > 0 && r.last_revenue < r.last_cost);
+  if (losingRoutes.length) add('neg', `Trasy na minusie wczoraj: ${list(losingRoutes, (r) => `${r.origin}–${r.dest} (${usd(r.last_revenue - r.last_cost)})`)}. Sprawdź ceny biletów albo zmniejsz liczbę lotów.`, 'routes');
+  const losingPlanes = ready.filter((a) => a.flights.length && a.last_revenue > 0 && a.last_revenue - a.last_cost < 0);
+  if (losingPlanes.length) add('neg', `Samoloty na minusie wczoraj: ${list(losingPlanes, planeName)}.`, 'fleet', { status: 'losing' });
+  const worn = ready.filter((a) => a.maintenance_until <= day && a.condition < Math.max(50, airline.auto_maint));
+  if (worn.length) add('neg', `Samoloty potrzebują przeglądu: ${list(worn, (a) => `${planeName(a)} (${Math.round(a.condition)}%)`)}.`, 'fleet', { status: 'worn' });
+  const low = ready.filter((a) => a.flights.length && usagePct(a) < 50);
+  if (low.length) add('warn', `Samoloty wykorzystane w mniej niż połowie: ${list(low, (a) => `${planeName(a)} (${usagePct(a)}%)`)}. Dodaj im trasę lub rotacje.`, 'fleet', { status: 'lowuse' });
+  const soon = fleet.filter((a) => a.delivery_day > day && a.delivery_day - day <= 2);
+  if (soon.length) add('', `Wkrótce dostawa: ${list(soon, (a) => `${planeName(a)} (${a.delivery_day - day > 1 ? `za ${a.delivery_day - day} dni` : 'jutro'})`)}. Przygotuj dla nich trasy.`, 'routes');
+  todoCard.items = items;
+  return `<div class="card todo"><h3>Do załatwienia</h3>
+    ${items.length ? `<ul>${items.map((it, i) => `<li class="${it.cls}"><span>${esc(it.text)}</span> <button class="secondary small" data-todo="${i}">Przejdź</button></li>`).join('')}</ul>`
+      : '<p class="muted">Wszystko w porządku: każdy samolot lata, a trasy są obsłużone.</p>'}
+  </div>`;
 }
 
 // Raport dnia: co wydarzyło się w linii w ostatnich dniach gry (najnowsze na górze).
@@ -321,6 +395,17 @@ function routesTab(el) {
   const { routes, fleet, bases } = state.data;
   const assigned = (rid) => fleet.filter((a) => a.flights.some((f) => f.route_id === rid));
   const lf = (d) => (d && d.seats ? pct(d.pax / d.seats) : '—');
+  // Samoloty latające na trasie (z rotacjami) i wybór kolejnego, który może na niej latać.
+  const routePlanes = (r) => {
+    const lines = assigned(r.id).map((a) => `<div class="flight" title="${esc(type(a.type_id).name)}">#${a.id} ${esc(type(a.type_id).name)}
+      ${flightControls(a, r, a.flights.find((f) => f.route_id === r.id))}</div>`).join('');
+    const opts = fleet.filter((a) => !a.flights.some((f) => f.route_id === r.id)).map((a) => {
+      const max = addableTrips(a, r.origin, r.dest);
+      return max > 0 ? `<option value="${a.id}" data-max="${max}">${planeName(a)}${a.flights.length ? '' : ' · wolny'} (max ${max})</option>` : '';
+    }).join('');
+    const add = opts ? `<div class="flight"><select data-radd="${r.id}"><option value="">+ dodaj samolot</option>${opts}</select></div>` : '';
+    return lines + add || '<span class="neg">brak samolotu</span>';
+  };
   el.innerHTML = `
     <div class="card"><h3>Otwórz nową trasę</h3>
       <div class="row">
@@ -329,19 +414,21 @@ function routesTab(el) {
         <label>Kraj<select id="r-country"></select></label>
         <label>Miasto<select id="r-dest"></select></label>
         ${CLS.map(([c, n]) => `<label>Cena: ${n}<input id="r-price-${c}" type="number" min="10" style="width:100px"></label>`).join('')}
+        <label>Samolot<select id="r-plane"></select></label>
+        <label>Rotacje/dzień<input id="r-trips" type="number" min="0.5" step="0.5" placeholder="max" style="width:80px" title="Puste = najwięcej, ile się zmieści"></label>
         <button id="r-open">Otwórz trasę</button>
       </div>
       <div id="r-market" class="muted"></div>
     </div>
     <div class="card"><h3>Twoje trasy</h3>
       ${routes.length ? `<div class="table-wrap"><table>
-        <tr><th>Trasa</th><th>Dystans</th><th>Ceny biletów (ekon. / biznes / pierwsza)</th><th>Samoloty</th><th>Pasażerowie/dzień</th><th>Obłożenie (E/B/P)</th><th>Przychód</th><th>Koszt lotów</th><th></th></tr>
+        <tr><th>Trasa</th><th>Dystans</th><th>Ceny biletów (ekon. / biznes / pierwsza)</th><th>Samoloty i rotacje/dzień</th><th>Pasażerowie/dzień</th><th>Obłożenie (E/B/P)</th><th>Przychód</th><th>Koszt lotów</th><th></th></tr>
         ${routes.map((r) => `<tr>
           <td>${r.origin} ⇄ ${r.dest}<div class="muted">${esc(airport(r.origin).city)} – ${esc(airport(r.dest).city)}</div></td>
           <td>${r.distance.toLocaleString('pl-PL')} km</td>
           <td>${CLS.map(([c, n]) => `<input type="number" title="${n} (ref. $${r.refFares[c]})" value="${r.prices[c]}" min="10" data-price="${r.id}" data-cls="${c}" style="width:68px">`).join(' ')}
             <div class="muted">ref. $${r.refFares.y} / $${r.refFares.j} / $${r.refFares.f}</div></td>
-          <td>${assigned(r.id).length}</td>
+          <td class="route-planes">${routePlanes(r)}</td>
           <td>${r.last_pax.toLocaleString('pl-PL')}${r.detail?.transfer ? `<div class="muted">w tym ${r.detail.transfer} z przesiadką</div>` : ''}</td>
           <td>${r.detail ? CLS.map(([c]) => lf(r.detail[c])).join(' / ') : '—'}</td>
           <td>${usd(r.last_revenue)}</td>
@@ -374,7 +461,17 @@ function routesTab(el) {
       Number(b.dataset.n) > 0 ? 'Sloty kupione' : 'Slot sprzedany')));
   });
 
+  // Samoloty, które mogą od razu polecieć na nowej trasie (najpierw wolne, potem z zapasem godzin).
+  const fillPlanes = () => {
+    const o = $('#r-origin').value, d = $('#r-dest').value, sel = $('#r-plane');
+    const prev = sel.value;
+    const list = o && d && o !== d ? fleet.map((a) => ({ a, max: addableTrips(a, o, d) })).filter((x) => x.max > 0)
+      .sort((x, y) => (x.a.flights.length - y.a.flights.length) || y.max - x.max) : [];
+    sel.innerHTML = `<option value="">${list.length ? 'bez samolotu' : 'brak pasującego samolotu'}</option>`
+      + list.map(({ a, max }) => `<option value="${a.id}" data-max="${max}" ${String(a.id) === prev ? 'selected' : ''}>${planeName(a)}${a.flights.length ? '' : ' · wolny'} (max ${max})</option>`).join('');
+  };
   const showMarket = async () => {
+    fillPlanes();
     const o = $('#r-origin').value, d = $('#r-dest').value;
     if (!o || o === d) { $('#r-market').textContent = ''; return; }
     const req = (state.marketReq = (state.marketReq || 0) + 1);
@@ -411,7 +508,15 @@ function routesTab(el) {
   $('#r-dest').onchange = showMarket;
   fillCountries();
   const val = (c) => Number($(`#r-price-${c}`).value) || undefined;
-  $('#r-open').onclick = () => act(() => api('POST', '/api/routes', { origin: $('#r-origin').value, dest: $('#r-dest').value, price: val('y'), price_j: val('j'), price_f: val('f') }), 'Trasa otwarta. Przypisz do niej samolot we Flocie.');
+  $('#r-open').onclick = () => act(async () => {
+    const plane = $('#r-plane').selectedOptions[0];
+    const r = await api('POST', '/api/routes', { origin: $('#r-origin').value, dest: $('#r-dest').value, price: val('y'), price_j: val('j'), price_f: val('f') });
+    if (!plane?.value) return toast('Trasa otwarta. Dodaj do niej samolot w tabeli poniżej.');
+    try { await addFlight(plane.value, r.id, Number(plane.dataset.max), Number($('#r-trips').value)); }
+    catch (e) { toast(`Trasa otwarta, ale samolotu nie udało się przypisać: ${e.message}`, true); }
+  });
+  el.querySelectorAll('[data-radd]').forEach((s) => (s.onchange = () => s.value && act(() => addFlight(s.value, Number(s.dataset.radd), Number(s.selectedOptions[0].dataset.max)))));
+  wireFlightControls(el);
   const key = { y: 'price', j: 'price_j', f: 'price_f' };
   el.querySelectorAll('[data-price]').forEach((i) => (i.onchange = () => act(() => api('PATCH', `/api/routes/${i.dataset.price}`, { [key[i.dataset.cls]]: Number(i.value) }), 'Cena zmieniona')));
   el.querySelectorAll('[data-close]').forEach((b) => (b.onclick = () => confirm('Zamknąć trasę? Samoloty wrócą do hangaru.') && act(() => api('DELETE', `/api/routes/${b.dataset.close}`), 'Trasa zamknięta')));
@@ -426,37 +531,23 @@ function fleet(el) {
     if (a.listing_id) return `<span class="warn">Na sprzedaż: ${usd(a.listing_price)}</span>`;
     return a.flights.length ? `<span class="pos">Lata${a.flights.length > 1 ? ` (${a.flights.length} trasy)` : ''}</span>` : '<span class="muted">W hangarze</span>';
   };
-  const routeById = (id) => routes.find((x) => x.id === id);
-  // Godziny na dobę, które samolot spędza na swoich trasach (bez trasy `skip`).
-  const hoursUsed = (a, t, skip) => a.flights.reduce((h, f) => {
-    const r = routeById(f.route_id);
-    return r && f.route_id !== skip ? h + f.round_trips * roundTripHours(t, distanceKm(r.origin, r.dest)) : h;
-  }, 0);
   // Jaką część dostępnych godzin lotu na dobę samolot faktycznie wykorzystuje.
-  const usage = (a, t) => {
-    const hours = hoursUsed(a, t);
+  const usage = (a) => {
+    const hours = hoursUsed(a);
     if (!hours) return '<span class="muted">0%</span>';
     const p = Math.round((hours / R.operatingHours) * 100);
     return `<b class="${p >= 75 ? 'pos' : p >= 40 ? 'warn' : 'neg'}">${p}%</b><div class="muted">${hours.toFixed(1)} z ${R.operatingHours} h</div>`;
   };
   // Lista tras samolotu z liczbą rotacji i wybór kolejnej trasy.
-  const flightsCell = (a, t, delivered) => {
+  const flightsCell = (a, delivered) => {
     const lines = a.flights.map((f) => {
       const r = routeById(f.route_id);
-      const max = maxRoundTrips(t, distanceKm(r.origin, r.dest), R.operatingHours - hoursUsed(a, t, f.route_id));
-      return `<div class="flight">${r.origin}–${r.dest}
-        <input type="number" data-rt="${a.id}" data-rid="${r.id}" value="${f.round_trips}" min="0.5" max="${max}" step="0.5" style="width:56px" title="Rotacje dziennie (max ${max})">
-        <button class="secondary small" data-unassign="${a.id}" data-rid="${r.id}" title="Zdejmij z tej trasy">✕</button></div>`;
+      return `<div class="flight">${r.origin}–${r.dest} ${flightControls(a, r, f)}</div>`;
     }).join('');
-    const left = R.operatingHours - hoursUsed(a, t);
-    // Samolot może dołączyć tylko trasę, która ma wspólne lotnisko z jego obecnymi trasami.
-    const airports = new Set(a.flights.flatMap((f) => { const r = routeById(f.route_id); return [r.origin, r.dest]; }));
     // Pokazujemy tylko trasy, które samolot faktycznie może obsłużyć.
     const opts = routes.filter((r) => !a.flights.some((f) => f.route_id === r.id)).map((r) => {
-      const dist = distanceKm(r.origin, r.dest), max = maxRoundTrips(t, dist, left);
-      const linked = !airports.size || airports.has(r.origin) || airports.has(r.dest);
-      if (dist > t.rangeKm || max <= 0 || !linked) return '';
-      return `<option value="${r.id}" data-max="${max}">${r.origin}–${r.dest} (max ${max})</option>`;
+      const max = addableTrips(a, r.origin, r.dest);
+      return max > 0 ? `<option value="${r.id}" data-max="${max}">${r.origin}–${r.dest} (max ${max})</option>` : '';
     }).join('');
     const add = opts && delivered
       ? `<div class="flight"><select data-add="${a.id}"><option value="">${a.flights.length ? '+ dodaj trasę' : '— w hangarze —'}</option>${opts}</select>
@@ -473,7 +564,38 @@ function fleet(el) {
   };
   const working = planes.filter((a) => a.delivery_day <= day);
   const ranked = [...working].sort((x, y) => (y.last_revenue - y.last_cost) - (x.last_revenue - x.last_cost));
-  const name = (a) => `${esc(type(a.type_id).name)} #${a.id}`;
+  const name = planeName;
+  // Filtry i sortowanie listy (zapamiętane między odświeżeniami).
+  const fv = (state.fleetView ||= { type: '', status: '', sort: 'id' });
+  const profitOf = (a) => a.last_revenue - a.last_cost;
+  const STATUS = {
+    flying: ['Latają', (a) => a.flights.length > 0],
+    idle: ['Bez tras', (a) => a.delivery_day <= day && !a.flights.length],
+    lowuse: ['Wykorzystanie < 50%', (a) => a.delivery_day <= day && usagePct(a) < 50],
+    losing: ['Na minusie wczoraj', (a) => a.delivery_day <= day && profitOf(a) < 0],
+    worn: ['Stan < 60%', (a) => a.delivery_day <= day && a.condition < 60],
+    maint: ['Na przeglądzie', (a) => a.maintenance_until > day],
+    delivery: ['W drodze', (a) => a.delivery_day > day],
+    leased: ['Leasingowane', (a) => a.leased],
+    owned: ['Własne', (a) => !a.leased],
+  };
+  const SORT = {
+    id: ['Numer', (x, y) => x.id - y.id],
+    profit: ['Zysk wczoraj ↓', (x, y) => profitOf(y) - profitOf(x)],
+    total: ['Zysk łącznie ↓', (x, y) => y.total_profit - x.total_profit],
+    usage: ['Wykorzystanie ↑', (x, y) => usagePct(x) - usagePct(y)],
+    cond: ['Stan ↑', (x, y) => x.condition - y.condition],
+    type: ['Typ', (x, y) => type(x.type_id).name.localeCompare(type(y.type_id).name) || x.id - y.id],
+  };
+  const typesOwned = [...new Set(planes.map((a) => a.type_id))].sort((x, y) => type(x).name.localeCompare(type(y).name));
+  if (fv.type && !typesOwned.includes(fv.type)) fv.type = '';
+  const shown = planes.filter((a) => (!fv.type || a.type_id === fv.type) && (!fv.status || STATUS[fv.status][1](a))).sort(SORT[fv.sort][1]);
+  const filters = `<div class="row fleet-filters">
+    <label>Typ<select data-fv="type"><option value="">Wszystkie typy</option>${typesOwned.map((id) => `<option value="${id}" ${fv.type === id ? 'selected' : ''}>${esc(type(id).name)} (${planes.filter((a) => a.type_id === id).length})</option>`).join('')}</select></label>
+    <label>Pokaż<select data-fv="status"><option value="">Wszystkie</option>${Object.entries(STATUS).map(([k, [n, f]]) => `<option value="${k}" ${fv.status === k ? 'selected' : ''}>${n} (${planes.filter(f).length})</option>`).join('')}</select></label>
+    <label>Sortuj<select data-fv="sort">${Object.entries(SORT).map(([k, [n]]) => `<option value="${k}" ${fv.sort === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+    <span class="muted">Pokazano ${shown.length} z ${planes.length}</span>
+  </div>`;
   el.innerHTML = `<div class="card"><h3>Twoja flota</h3>
     ${ranked.length > 1 ? `<p>Wczoraj najlepszy wynik miał <b>${name(ranked[0])}</b> (${signed(ranked[0].last_revenue - ranked[0].last_cost)}),
       a najsłabszy <b>${name(ranked.at(-1))}</b> (${signed(ranked.at(-1).last_revenue - ranked.at(-1).last_cost)}).</p>` : ''}
@@ -481,9 +603,9 @@ function fleet(el) {
       <label>Automatyczny przegląd, gdy stan spadnie poniżej (%)<input id="automaint" type="number" min="0" max="95" value="${airline.auto_maint}" style="width:90px"></label>
       <p class="muted">0 = wyłączone. Zużyte samoloty kosztują więcej, psują się i obniżają reputację.</p>
     </div>
-    ${planes.length ? `<div class="table-wrap"><table>
+    ${planes.length ? `${filters}<div class="table-wrap"><table>
       <tr><th>#</th><th>Typ</th><th>Status</th><th>Stan</th><th>Fotele (biznes / pierwsza)</th><th>Trasy i rotacje/dzień</th><th>Wykorzystanie</th><th class="num">Zysk wczoraj</th><th></th></tr>
-      ${planes.map((a) => {
+      ${shown.map((a) => {
         const t = type(a.type_id);
         const delivered = a.delivery_day <= day;
         return `<tr>
@@ -493,8 +615,8 @@ function fleet(el) {
           <td><b class="${condClass(a.condition)}">${Math.round(a.condition)}%</b></td>
           <td><input type="number" min="0" value="${a.seats_j}" data-j="${a.id}" style="width:60px"> <input type="number" min="0" value="${a.seats_f}" data-f="${a.id}" style="width:60px">
             <div class="muted">${a.seatMap.y} E · ${a.seatMap.j} B · ${a.seatMap.f} P</div></td>
-          <td>${flightsCell(a, t, delivered)}</td>
-          <td>${usage(a, t)}</td>
+          <td>${flightsCell(a, delivered)}</td>
+          <td>${usage(a)}</td>
           <td class="num nowrap">${profitCell(a, delivered)}</td>
           <td class="actions">
             <button class="secondary" data-maint="${a.id}" ${delivered && a.maintenance_until <= day && a.condition < 99 ? '' : 'disabled'} title="Przegląd trwa ${R.maintenanceDays} dni">Przegląd ${usd(a.maintenanceCost)}</button>
@@ -505,25 +627,16 @@ function fleet(el) {
         </tr>`;
       }).join('')}
     </table></div>
+    ${shown.length ? '' : '<p class="muted">Żaden samolot nie pasuje do wybranych filtrów.</p>'}
     <p class="muted">Wykorzystanie to część z ${R.operatingHours} godzin na dobę, którą samolot spędza w locie i na obsłudze między lotami. Im bliżej 100%, tym lepiej zarabia.
       Zysk samolotu to jego część przychodu z tras (według liczby miejsc, które na nich oferuje) minus jego koszty: paliwo, załoga, opłaty, obsługa pasażerów, koszty stałe, leasing i przeglądy. „Łącznie” liczy się od zakupu. Jeden samolot może latać na kilku trasach, dopóki starcza mu godzin, ale tylko na trasach połączonych ze sobą wspólnymi lotniskami (np. WAW–BER i BER–CDG). Rotacja = lot tam i z powrotem. Fotel biznes zajmuje ${R.classSpace.j}, a pierwszej klasy ${R.classSpace.f} miejsca ekonomiczne. „Sprzedaj” sprzedaje od razu brokerowi, „Wystaw na rynek” pozwala ustalić własną cenę dla innych graczy.</p>` : '<p class="muted">Nie masz jeszcze samolotów. Zajrzyj do „Nowe samoloty” albo na „Rynek wtórny”.</p>'}
   </div>`;
 
+  el.querySelectorAll('[data-fv]').forEach((s) => (s.onchange = () => { fv[s.dataset.fv] = s.value; keepScroll(renderMain); }));
   $('#automaint').onchange = (e) => act(() => api('POST', '/api/airline/settings', { autoMaint: Number(e.target.value) }), 'Ustawienie zapisane');
-  const assign = (id, routeId, roundTrips) =>
-    act(() => api('POST', `/api/aircraft/${id}/assign`, { routeId, roundTrips }), roundTrips === 0 ? 'Samolot zdjęty z trasy' : 'Samolot przypisany');
-  // Nowa trasa: wybrana liczba rotacji (albo maksimum); serwer zmniejszy ją, jeśli brakuje slotów.
-  el.querySelectorAll('[data-add]').forEach((s) => (s.onchange = () => {
-    if (!s.value) return;
-    const typed = Number(el.querySelector(`[data-addn="${s.dataset.add}"]`).value);
-    const max = Number(s.selectedOptions[0].dataset.max);
-    act(async () => {
-      const r = await api('POST', `/api/aircraft/${s.dataset.add}/assign`, { routeId: Number(s.value), roundTrips: typed > 0 ? Math.min(typed, max) : max, fit: true });
-      toast(`Samolot przypisany (rotacje dziennie: ${r.roundTrips})${r.reduced ? '. Na więcej brakuje slotów lub godzin.' : ''}`);
-    });
-  }));
-  el.querySelectorAll('[data-rt]').forEach((i) => (i.onchange = () => assign(i.dataset.rt, Number(i.dataset.rid), Number(i.value) || 0)));
-  el.querySelectorAll('[data-unassign]').forEach((b) => (b.onclick = () => assign(b.dataset.unassign, Number(b.dataset.rid), 0)));
+  el.querySelectorAll('[data-add]').forEach((s) => (s.onchange = () => s.value && act(() => addFlight(s.dataset.add, Number(s.value),
+    Number(s.selectedOptions[0].dataset.max), Number(el.querySelector(`[data-addn="${s.dataset.add}"]`).value)))));
+  wireFlightControls(el);
   const config = (id) => act(() => api('POST', `/api/aircraft/${id}/config`, {
     j: Number(el.querySelector(`[data-j="${id}"]`).value) || 0, f: Number(el.querySelector(`[data-f="${id}"]`).value) || 0,
   }), 'Układ foteli zmieniony');

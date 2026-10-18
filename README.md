@@ -39,6 +39,9 @@ Zmienne środowiskowe:
   ekonomiczne, pierwszej klasy 3), a każda trasa ma trzy ceny biletów. Na długich trasach popyt na klasy premium jest większy.
 - **Trasy i rotacje**: samolot lata na jednej lub kilku trasach z własnych baz (kilka tras tylko wtedy, gdy są połączone wspólnymi lotniskami). Każda rotacja (lot tam i z powrotem)
   zajmuje czas lotu plus obsługę na lotnisku, a suma nie może przekroczyć 20 godzin na dobę.
+- **Wygodne zarządzanie**: przy otwieraniu trasy od razu wybierasz samolot i liczbę rotacji; w tabeli tras widać samoloty
+  na każdej trasie (z rotacjami) i można dodać kolejny; Flota ma filtry (typ, bez tras, na minusie, zużyte…) i sortowanie;
+  na Pulpicie karta „Do załatwienia” zbiera samoloty bez tras, trasy bez samolotów, straty, przeglądy i słabe wykorzystanie.
 - **Wynik samolotu**: we Flocie każdy samolot ma swój zysk z ostatniego dnia (część przychodu tras według oferowanych
   miejsc minus jego koszty) i łączny zysk od zakupu.
 - **Stan techniczny**: samoloty zużywają się podczas lotów. Zużyte kosztują więcej, mogą się zepsuć i obniżają reputację.
