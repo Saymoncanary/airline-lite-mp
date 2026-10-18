@@ -89,6 +89,7 @@ async function boot() {
   state.st = st;
   await route();
   setInterval(() => state.data && refresh(true), 10000);
+  setInterval(tickCountdown, 1000);
 }
 
 async function route() {
@@ -103,20 +104,34 @@ async function refresh(auto = false) {
   const before = members(state.data);
   try {
     state.data = await api('GET', '/api/airline');
+    state.nextDayAt = state.data.nextDayIn == null ? null : Date.now() + state.data.nextDayIn;
   } catch (e) {
     if (!auto) toast(e.message, true);
     return;
   }
   renderTop();
+  tickCountdown();
   // Przy automatycznym odświeżaniu nie przerysowujemy formularzy, w których gracz coś wpisuje.
   const allianceChanged = state.tab === 'alliance' && before !== members(state.data) && !$('#chat-text')?.value && !$('#al-name')?.value;
   if (!auto || ['dashboard', 'ranking'].includes(state.tab) || allianceChanged) renderMain();
 }
 
+// Odliczanie do następnego dnia gry, liczone od czasu podanego przez serwer.
+function tickCountdown() {
+  const el = $('#countdown');
+  if (!el || state.nextDayAt == null) return;
+  const left = Math.max(0, Math.ceil((state.nextDayAt - Date.now()) / 1000));
+  el.textContent = left > 0 ? `· następny dzień za ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}` : '· nowy dzień…';
+  if (left === 0 && !tickCountdown.pending) {
+    tickCountdown.pending = true;
+    setTimeout(() => refresh(true).finally(() => (tickCountdown.pending = false)), 1500);
+  }
+}
+
 function renderTop() {
   const { airline, day } = state.data || {};
   $('#topinfo').innerHTML = airline
-    ? `<span>📅 <b>${gameDate(day)}</b></span>
+    ? `<span>📅 <b>${gameDate(day)}</b> <span id="countdown" class="muted"></span></span>
        <span>${esc(airline.name)} (${esc(airline.code)})</span>
        <span>Gotówka: <b>${usd(airline.cash)}</b></span>
        <span>Wartość: <b>${usd(airline.value)}</b></span>

@@ -35,7 +35,7 @@ async function readJson(req) {
   try { return body ? JSON.parse(body) : {}; } catch { fail(400, 'Niepoprawny JSON'); }
 }
 
-export function createApp({ db, secureCookies = false }) {
+export function createApp({ db, clock = null, secureCookies = false }) {
   const routes = [];
   const on = (method, pattern, handler) => {
     const keys = [];
@@ -157,7 +157,8 @@ export function createApp({ db, secureCookies = false }) {
       season: seasonMult(day), month: MONTHS[gameMonth(day)],
       events: activeEvents(db, day).filter((e) => e.kind !== 'fuel').map((e) => ({ text: e.text, endDay: e.end_day })),
     };
-    return { day, airline: { ...airline, value: companyValue(db, airline, day) }, bases, fleet, routes, stats, world, alliance: myAlliance(airline.id) };
+    const nextDayIn = clock ? Math.max(0, clock.nextTickAt - Date.now()) : null;
+    return { day, nextDayIn, airline: { ...airline, value: companyValue(db, airline, day) }, bases, fleet, routes, stats, world, alliance: myAlliance(airline.id) };
   });
 
   on('POST', '/api/airline/settings', async (ctx) => {
