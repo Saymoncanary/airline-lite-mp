@@ -1,6 +1,6 @@
 'use strict';
 
-const state = { me: null, st: null, data: null, tab: 'dashboard', map: null, chatTimer: null, routeCountry: 'Polska' };
+const state = { me: null, st: null, data: null, tab: 'dashboard', map: null, chatTimer: null, routeCountry: 'Polska', routeContinent: 'Europa' };
 const $ = (sel) => document.querySelector(sel);
 const view = () => $('#view');
 
@@ -19,10 +19,18 @@ const REGIONS = ['Polska', 'Europa Zachodnia', 'Europa Południowa', 'Europa Śr
   'Rosja i Azja Centralna', 'Bliski Wschód', 'Afryka', 'Azja Południowa', 'Azja Wschodnia', 'Azja Południowo-Wschodnia', 'Oceania',
   'Ameryka Północna', 'Karaiby i Ameryka Środkowa', 'Ameryka Południowa'];
 // Lista lotnisk pogrupowana według regionów świata.
-// Kraje do wyboru celu trasy: Polska na początku, reszta alfabetycznie.
-function countries() {
-  const all = [...new Set(state.st.airports.map((a) => a.country))].sort((a, b) => a.localeCompare(b, 'pl'));
-  return ['Polska', ...all.filter((c) => c !== 'Polska')];
+// Kontynenty do wyboru celu trasy (z regionów; Rosję liczymy do Europy).
+const CONTINENTS = ['Europa', 'Azja', 'Afryka', 'Ameryka Północna', 'Ameryka Południowa', 'Australia i Oceania'];
+const REGION_CONTINENT = {
+  'Turcja, Kaukaz': 'Azja', 'Rosja i Azja Centralna': 'Azja', 'Bliski Wschód': 'Azja', 'Azja Południowa': 'Azja',
+  'Azja Wschodnia': 'Azja', 'Azja Południowo-Wschodnia': 'Azja', Afryka: 'Afryka', Oceania: 'Australia i Oceania',
+  'Ameryka Północna': 'Ameryka Północna', 'Karaiby i Ameryka Środkowa': 'Ameryka Północna', 'Ameryka Południowa': 'Ameryka Południowa',
+};
+const continentOf = (a) => (a.country === 'Rosja' ? 'Europa' : REGION_CONTINENT[a.region] || 'Europa');
+// Kraje danego kontynentu: Polska na początku, reszta alfabetycznie.
+function countries(continent) {
+  const all = [...new Set(state.st.airports.filter((a) => continentOf(a) === continent).map((a) => a.country))].sort((a, b) => a.localeCompare(b, 'pl'));
+  return all.includes('Polska') ? ['Polska', ...all.filter((c) => c !== 'Polska')] : all;
 }
 function airportOptions({ selected, filter = () => true, label = (a) => `${esc(a.city)} (${a.code})` } = {}) {
   return REGIONS.map((r) => {
@@ -267,7 +275,8 @@ function routesTab(el) {
     <div class="card"><h3>Otwórz nową trasę</h3>
       <div class="row">
         <label>Skąd (baza)<select id="r-origin">${bases.map((b) => `<option value="${b}">${esc(apLabel(b))}</option>`).join('')}</select></label>
-        <label>Kraj<select id="r-country">${countries().map((c) => `<option ${c === state.routeCountry ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+        <label>Kontynent<select id="r-continent">${CONTINENTS.map((c) => `<option ${c === state.routeContinent ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+        <label>Kraj<select id="r-country"></select></label>
         <label>Miasto<select id="r-dest"></select></label>
         ${CLS.map(([c, n]) => `<label>Cena: ${n}<input id="r-price-${c}" type="number" min="10" style="width:100px"></label>`).join('')}
         <button id="r-open">Otwórz trasę</button>
@@ -310,10 +319,18 @@ function routesTab(el) {
       .map((a) => `<option value="${a.code}">${esc(a.city)} (${a.code}) · rynek ${a.size}/10</option>`).join('');
     showMarket();
   };
+  const fillCountries = () => {
+    state.routeContinent = $('#r-continent').value;
+    const list = countries(state.routeContinent);
+    if (!list.includes(state.routeCountry)) state.routeCountry = list[0];
+    $('#r-country').innerHTML = list.map((c) => `<option ${c === state.routeCountry ? 'selected' : ''}>${esc(c)}</option>`).join('');
+    fillCities();
+  };
+  $('#r-continent').onchange = fillCountries;
   $('#r-country').onchange = fillCities;
   $('#r-origin').onchange = showMarket;
   $('#r-dest').onchange = showMarket;
-  fillCities();
+  fillCountries();
   const val = (c) => Number($(`#r-price-${c}`).value) || undefined;
   $('#r-open').onclick = () => act(() => api('POST', '/api/routes', { origin: $('#r-origin').value, dest: $('#r-dest').value, price: val('y'), price_j: val('j'), price_f: val('f') }), 'Trasa otwarta. Przypisz do niej samolot we Flocie.');
   const key = { y: 'price', j: 'price_j', f: 'price_f' };
