@@ -237,10 +237,11 @@ export function aircraftValue(type, ageDays, condition = 100) {
   return Math.round(type.price * Math.max(0.3, 0.9 - (ageDays / 365) * 0.03) * (0.7 + (0.3 * condition) / 100));
 }
 
-// Wykup leasingowanego samolotu: cena nowego pomniejszona o zużycie (wiek, stan) i o wpłaconą opłatę leasingową,
-// więc leasing z natychmiastowym wykupem kosztuje tyle co zakup.
-export function buyoutPrice(type, ageDays, condition = 100) {
-  const v = type.price * Math.max(0.3, 1 - (ageDays / 365) * 0.03) * (0.7 + (0.3 * condition) / 100);
+// Wykup leasingowanego samolotu: cena nowego pomniejszona o wiek i o wpłaconą opłatę leasingową,
+// więc leasing z natychmiastowym wykupem kosztuje tyle co zakup. Stan techniczny nie obniża ceny
+// (inaczej opłacałoby się wykupić zużyty samolot i tanio odnowić go przeglądem).
+export function buyoutPrice(type, ageDays) {
+  const v = type.price * Math.max(0.3, 1 - (ageDays / 365) * 0.03);
   return Math.round(Math.max(type.price * 0.1, v - type.price * RULES.leaseDepositPct) / 1e4) * 1e4;
 }
 

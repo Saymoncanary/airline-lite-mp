@@ -273,7 +273,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       return {
         ...a, value: a.leased ? 0 : aircraftValue(t, Math.max(0, day - a.acquired_day), a.condition),
         flights: flightsOf.all(a.id), leaseDaily: a.leased ? leaseDaily(t) : 0,
-        buyout: a.leased ? buyoutPrice(t, Math.max(0, day - a.acquired_day), a.condition) : 0, seatMap: seatMap(t, a.seats_j, a.seats_f), maintenanceCost: maintenanceCost(t, a.condition),
+        buyout: a.leased ? buyoutPrice(t, Math.max(0, day - a.acquired_day)) : 0, seatMap: seatMap(t, a.seats_j, a.seats_f), maintenanceCost: maintenanceCost(t, a.condition),
       };
     });
     const routes = db.prepare('SELECT * FROM routes WHERE airline_id = ? ORDER BY id').all(airline.id).map((r) => {
@@ -394,7 +394,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       if (!ac.leased) fail(400, 'Ten samolot jest już Twój');
       if (ac.delivery_day > currentDay(db)) fail(400, 'Ten samolot nie został jeszcze dostarczony');
       const t = AIRCRAFT_TYPES[ac.type_id];
-      spend(airline, buyoutPrice(t, Math.max(0, currentDay(db) - ac.acquired_day), ac.condition), `Wykup z leasingu: ${t.name} #${ac.id}`);
+      spend(airline, buyoutPrice(t, Math.max(0, currentDay(db) - ac.acquired_day)), `Wykup z leasingu: ${t.name} #${ac.id}`);
       db.prepare('UPDATE aircraft SET leased = 0 WHERE id = ?').run(ac.id);
     });
     return { ok: true };
