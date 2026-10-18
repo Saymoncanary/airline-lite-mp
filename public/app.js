@@ -73,11 +73,13 @@ function distanceKm(a, b) {
   const h = Math.sin(((B.lat - A.lat) * r) / 2) ** 2 + Math.cos(A.lat * r) * Math.cos(B.lat * r) * Math.sin(((B.lon - A.lon) * r) / 2) ** 2;
   return Math.round(2 * 6371 * Math.asin(Math.sqrt(h)));
 }
-function maxRoundTrips(t, dist) {
-  const R = state.st.rules;
-  const rt = 2 * (dist / t.speed + R.turnaroundHours);
-  const n = Math.floor(R.operatingHours / rt);
-  return n >= 1 ? n : rt <= 2 * R.operatingHours ? 0.5 : 0;
+function roundTripHours(t, dist) {
+  return 2 * (dist / t.speed + state.st.rules.turnaroundHours);
+}
+function maxRoundTrips(t, dist, hoursLeft = state.st.rules.operatingHours) {
+  const rt = roundTripHours(t, dist);
+  const n = Math.floor(hoursLeft / rt + 1e-9);
+  return n >= 1 ? n : rt / 2 <= hoursLeft + 1e-9 ? 0.5 : 0;
 }
 
 // --- Start -----------------------------------------------------------------
@@ -259,7 +261,7 @@ function dashboard(el) {
 
 function routesTab(el) {
   const { routes, fleet, bases } = state.data;
-  const assigned = (rid) => fleet.filter((a) => a.route_id === rid);
+  const assigned = (rid) => fleet.filter((a) => a.flights.some((f) => f.route_id === rid));
   const lf = (d) => (d && d.seats ? pct(d.pax / d.seats) : '—');
   el.innerHTML = `
     <div class="card"><h3>Otwórz nową trasę</h3>
@@ -326,15 +328,39 @@ function fleet(el) {
     if (a.delivery_day > day) return `<span class="warn">Dostawa za ${a.delivery_day - day} dn.</span>`;
     if (a.maintenance_until > day) return `<span class="warn">Przegląd do ${gameDate(a.maintenance_until)}</span>`;
     if (a.listing_id) return `<span class="warn">Na sprzedaż: ${usd(a.listing_price)}</span>`;
-    return a.route_id ? '<span class="pos">Lata</span>' : '<span class="muted">W hangarze</span>';
+    return a.flights.length ? `<span class="pos">Lata${a.flights.length > 1 ? ` (${a.flights.length} trasy)` : ''}</span>` : '<span class="muted">W hangarze</span>';
   };
+  const routeById = (id) => routes.find((x) => x.id === id);
+  // Godziny na dobę, które samolot spędza na swoich trasach (bez trasy `skip`).
+  const hoursUsed = (a, t, skip) => a.flights.reduce((h, f) => {
+    const r = routeById(f.route_id);
+    return r && f.route_id !== skip ? h + f.round_trips * roundTripHours(t, distanceKm(r.origin, r.dest)) : h;
+  }, 0);
   // Jaką część dostępnych godzin lotu na dobę samolot faktycznie wykorzystuje.
   const usage = (a, t) => {
-    const r = routes.find((x) => x.id === a.route_id);
-    if (!r || !a.round_trips) return '<span class="muted">0%</span>';
-    const hours = a.round_trips * 2 * (distanceKm(r.origin, r.dest) / t.speed + R.turnaroundHours);
+    const hours = hoursUsed(a, t);
+    if (!hours) return '<span class="muted">0%</span>';
     const p = Math.round((hours / R.operatingHours) * 100);
     return `<b class="${p >= 75 ? 'pos' : p >= 40 ? 'warn' : 'neg'}">${p}%</b><div class="muted">${hours.toFixed(1)} z ${R.operatingHours} h</div>`;
+  };
+  // Lista tras samolotu z liczbą rotacji i wybór kolejnej trasy.
+  const flightsCell = (a, t, delivered) => {
+    const lines = a.flights.map((f) => {
+      const r = routeById(f.route_id);
+      const max = maxRoundTrips(t, distanceKm(r.origin, r.dest), R.operatingHours - hoursUsed(a, t, f.route_id));
+      return `<div class="flight">${r.origin}–${r.dest}
+        <input type="number" data-rt="${a.id}" data-rid="${r.id}" value="${f.round_trips}" min="0.5" max="${max}" step="0.5" style="width:56px" title="Rotacje dziennie (max ${max})">
+        <button class="secondary small" data-unassign="${a.id}" data-rid="${r.id}" title="Zdejmij z tej trasy">✕</button></div>`;
+    }).join('');
+    const left = R.operatingHours - hoursUsed(a, t);
+    const opts = routes.filter((r) => !a.flights.some((f) => f.route_id === r.id)).map((r) => {
+      const dist = distanceKm(r.origin, r.dest), max = maxRoundTrips(t, dist, left), ok = dist <= t.rangeKm && max > 0;
+      return `<option value="${r.id}" data-max="${max}" ${ok ? '' : 'disabled'}>${r.origin}–${r.dest}${dist > t.rangeKm ? ' (za daleko)' : ok ? ` (max ${max})` : ' (brak godzin)'}</option>`;
+    }).join('');
+    const add = opts && delivered
+      ? `<select data-add="${a.id}"><option value="">${a.flights.length ? '+ dodaj trasę' : '— w hangarze —'}</option>${opts}</select>`
+      : a.flights.length ? '' : '<span class="muted">— w hangarze —</span>';
+    return lines + add;
   };
   el.innerHTML = `<div class="card"><h3>Twoja flota</h3>
     <div class="row">
@@ -342,14 +368,10 @@ function fleet(el) {
       <p class="muted">0 = wyłączone. Zużyte samoloty kosztują więcej, psują się i obniżają reputację.</p>
     </div>
     ${planes.length ? `<div class="table-wrap"><table>
-      <tr><th>#</th><th>Typ</th><th>Status</th><th>Stan</th><th>Fotele (biznes / pierwsza)</th><th>Trasa</th><th>Rotacje/dzień</th><th>Wykorzystanie</th><th></th></tr>
+      <tr><th>#</th><th>Typ</th><th>Status</th><th>Stan</th><th>Fotele (biznes / pierwsza)</th><th>Trasy i rotacje/dzień</th><th>Wykorzystanie</th><th></th></tr>
       ${planes.map((a) => {
         const t = type(a.type_id);
         const delivered = a.delivery_day <= day;
-        const opts = routes.map((r) => {
-          const dist = distanceKm(r.origin, r.dest), max = maxRoundTrips(t, dist), ok = dist <= t.rangeKm && max > 0;
-          return `<option value="${r.id}" data-max="${max}" ${a.route_id === r.id ? 'selected' : ''} ${ok ? '' : 'disabled'}>${r.origin}–${r.dest}${ok ? ` (max ${max})` : ' (za daleko)'}</option>`;
-        }).join('');
         return `<tr>
           <td>${a.id}</td>
           <td>${esc(t.name)}<div class="muted">${a.leased ? `Leasing (${usd(a.leaseDaily)}/dzień)` : `Własny, wart ${usd(a.value)}`} · ${Math.max(0, Math.round((day - a.acquired_day) / 365 * 10) / 10)} lat</div></td>
@@ -357,8 +379,7 @@ function fleet(el) {
           <td><b class="${condClass(a.condition)}">${Math.round(a.condition)}%</b></td>
           <td><input type="number" min="0" value="${a.seats_j}" data-j="${a.id}" style="width:60px"> <input type="number" min="0" value="${a.seats_f}" data-f="${a.id}" style="width:60px">
             <div class="muted">${a.seatMap.y} E · ${a.seatMap.j} B · ${a.seatMap.f} P</div></td>
-          <td><select data-route="${a.id}" ${delivered ? '' : 'disabled'}><option value="">— w hangarze —</option>${opts}</select></td>
-          <td><input type="number" data-rt="${a.id}" value="${a.round_trips || ''}" min="0.5" step="0.5" style="width:60px" ${delivered ? '' : 'disabled'}></td>
+          <td>${flightsCell(a, t, delivered)}</td>
           <td>${usage(a, t)}</td>
           <td class="actions">
             <button class="secondary" data-maint="${a.id}" ${delivered && a.maintenance_until <= day && a.condition < 99 ? '' : 'disabled'} title="Przegląd trwa ${R.maintenanceDays} dni">Przegląd ${usd(a.maintenanceCost)}</button>
@@ -368,19 +389,17 @@ function fleet(el) {
         </tr>`;
       }).join('')}
     </table></div>
-    <p class="muted">Wykorzystanie to część z ${R.operatingHours} godzin na dobę, którą samolot spędza w locie i na obsłudze między lotami. Im bliżej 100%, tym lepiej zarabia. Rotacja = lot tam i z powrotem. Fotel biznes zajmuje ${R.classSpace.j}, a pierwszej klasy ${R.classSpace.f} miejsca ekonomiczne. „Sprzedaj” sprzedaje od razu brokerowi, „Wystaw na rynek” pozwala ustalić własną cenę dla innych graczy.</p>` : '<p class="muted">Nie masz jeszcze samolotów. Zajrzyj do „Nowe samoloty” albo na „Rynek wtórny”.</p>'}
+    <p class="muted">Wykorzystanie to część z ${R.operatingHours} godzin na dobę, którą samolot spędza w locie i na obsłudze między lotami. Im bliżej 100%, tym lepiej zarabia. Jeden samolot może latać na kilku trasach, dopóki starcza mu godzin. Rotacja = lot tam i z powrotem. Fotel biznes zajmuje ${R.classSpace.j}, a pierwszej klasy ${R.classSpace.f} miejsca ekonomiczne. „Sprzedaj” sprzedaje od razu brokerowi, „Wystaw na rynek” pozwala ustalić własną cenę dla innych graczy.</p>` : '<p class="muted">Nie masz jeszcze samolotów. Zajrzyj do „Nowe samoloty” albo na „Rynek wtórny”.</p>'}
   </div>`;
 
   $('#automaint').onchange = (e) => act(() => api('POST', '/api/airline/settings', { autoMaint: Number(e.target.value) }), 'Ustawienie zapisane');
-  const assign = (id) => {
-    const sel = el.querySelector(`[data-route="${id}"]`), rt = el.querySelector(`[data-rt="${id}"]`);
-    if (!sel.value) return act(() => api('POST', `/api/aircraft/${id}/assign`, { routeId: null }), 'Samolot w hangarze');
-    const max = Number(sel.selectedOptions[0].dataset.max);
-    const n = Math.min(max, Number(rt.value) || max);
-    act(() => api('POST', `/api/aircraft/${id}/assign`, { routeId: Number(sel.value), roundTrips: n }), 'Samolot przypisany');
-  };
-  el.querySelectorAll('[data-route]').forEach((s) => (s.onchange = () => { el.querySelector(`[data-rt="${s.dataset.route}"]`).value = ''; assign(s.dataset.route); }));
-  el.querySelectorAll('[data-rt]').forEach((i) => (i.onchange = () => assign(i.dataset.rt)));
+  const assign = (id, routeId, roundTrips) =>
+    act(() => api('POST', `/api/aircraft/${id}/assign`, { routeId, roundTrips }), roundTrips === 0 ? 'Samolot zdjęty z trasy' : 'Samolot przypisany');
+  el.querySelectorAll('[data-add]').forEach((s) => (s.onchange = () => {
+    if (s.value) assign(s.dataset.add, Number(s.value), Number(s.selectedOptions[0].dataset.max));
+  }));
+  el.querySelectorAll('[data-rt]').forEach((i) => (i.onchange = () => assign(i.dataset.rt, Number(i.dataset.rid), Number(i.value) || 0)));
+  el.querySelectorAll('[data-unassign]').forEach((b) => (b.onclick = () => assign(b.dataset.unassign, Number(b.dataset.rid), 0)));
   const config = (id) => act(() => api('POST', `/api/aircraft/${id}/config`, {
     j: Number(el.querySelector(`[data-j="${id}"]`).value) || 0, f: Number(el.querySelector(`[data-f="${id}"]`).value) || 0,
   }), 'Układ foteli zmieniony');

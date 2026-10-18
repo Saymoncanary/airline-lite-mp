@@ -67,3 +67,5 @@ td.actions { display: flex; gap: 6px; flex-wrap: wrap; }
   th, td { padding: 5px 4px; }
   td input, td select { padding: 5px 6px; }
 }
+.flight { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+button.small { padding: 3px 8px; }

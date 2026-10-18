@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { openDb } from '../src/db.js';
 import { createApp } from '../src/app.js';
-import { runTick, allocateMarket } from '../src/game.js';
+import { runTick, allocateMarket, maxRoundTrips, roundTripHours, distanceKm, RULES } from '../src/game.js';
+import { AIRCRAFT_TYPES } from '../src/data.js';
 
 const calm = () => 0.5; // los bez wydarzeń i zmian cen paliwa
 
@@ -185,4 +186,36 @@ test('wydarzenia losowe i cena paliwa', () => {
   const fuel = db.prepare('SELECT fuel FROM game_state').get().fuel;
   assert.ok(fuel >= 0.5 && fuel <= 2);
   assert.ok(db.prepare('SELECT COUNT(*) AS n FROM news').get().n > 5, 'powinny pojawić się wydarzenia');
+});
+
+test('jeden samolot na kilku trasach', async () => {
+  const { db, server, base } = await startServer();
+  const a = client(base);
+  await a('POST', '/api/register', { username: 'kasia', password: 'haslo1234' });
+  await a('POST', '/api/airline', { name: 'Kasia Air', code: 'KA', hub: 'WAW' });
+  await a('POST', '/api/aircraft', { typeId: 'A320', mode: 'buy' });
+  for (let i = 0; i < 6; i++) runTick(db, calm);
+  const ac = (await a('GET', '/api/airline')).data.fleet[0];
+  const ber = (await a('POST', '/api/routes', { origin: 'WAW', dest: 'BER' })).data.id;
+  const prg = (await a('POST', '/api/routes', { origin: 'WAW', dest: 'PRG' })).data.id;
+  const t = AIRCRAFT_TYPES.A320;
+  assert.equal((await a('POST', `/api/aircraft/${ac.id}/assign`, { routeId: ber, roundTrips: 2 })).status, 200);
+  const left = RULES.operatingHours - 2 * roundTripHours(t, distanceKm('WAW', 'BER'));
+  const max = maxRoundTrips(t, distanceKm('WAW', 'PRG'), left);
+  assert.ok(max >= 1);
+  assert.equal((await a('POST', `/api/aircraft/${ac.id}/assign`, { routeId: prg, roundTrips: max + 1 })).status, 400);
+  assert.equal((await a('POST', `/api/aircraft/${ac.id}/assign`, { routeId: prg, roundTrips: max })).status, 200);
+  // Zwiększenie rotacji na pierwszej trasie nie zmieści się już w dobie.
+  assert.equal((await a('POST', `/api/aircraft/${ac.id}/assign`, { routeId: ber, roundTrips: 2 + max + 1 })).status, 400);
+  runTick(db, calm);
+  const data = (await a('GET', '/api/airline')).data;
+  assert.equal(data.fleet[0].flights.length, 2);
+  assert.ok(data.routes.every((r) => r.last_seats > 0 && r.last_pax > 0));
+  // Zamknięcie trasy i zdjęcie z trasy usuwają przypisania.
+  assert.equal((await a('DELETE', `/api/routes/${ber}`)).status, 200);
+  assert.deepEqual((await a('GET', '/api/airline')).data.fleet[0].flights.map((f) => f.route_id), [prg]);
+  assert.equal((await a('POST', `/api/aircraft/${ac.id}/assign`, { routeId: prg, roundTrips: 0 })).status, 200);
+  assert.equal((await a('GET', '/api/airline')).data.fleet[0].flights.length, 0);
+  server.closeAllConnections();
+  server.close();
 });

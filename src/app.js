@@ -4,7 +4,7 @@ import { join, normalize, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AIRPORTS, AIRCRAFT_TYPES } from './data.js';
 import {
-  RULES, CLASSES, MONTHS, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, leaseDaily, aircraftValue,
+  RULES, CLASSES, MONTHS, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, roundTripHours, leaseDaily, aircraftValue,
   seatMap, validSeatConfig, maintenanceCost, routePrices, seasonMult, gameMonth, activeEvents,
   pairKey, tx, currentDay, addNews, companyValue,
 } from './game.js';
@@ -135,13 +135,14 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     const airline = requireAirline(ctx);
     const day = currentDay(db);
     const bases = db.prepare('SELECT airport FROM bases WHERE airline_id = ?').all(airline.id).map((b) => b.airport);
+    const flightsOf = db.prepare('SELECT route_id, round_trips FROM flights WHERE aircraft_id = ? ORDER BY route_id');
     const fleet = db.prepare(
       'SELECT a.*, l.id AS listing_id, l.price AS listing_price FROM aircraft a LEFT JOIN used_listings l ON l.aircraft_id = a.id WHERE a.airline_id = ? ORDER BY a.id'
     ).all(airline.id).map((a) => {
       const t = AIRCRAFT_TYPES[a.type_id];
       return {
         ...a, value: a.leased ? 0 : aircraftValue(t, Math.max(0, day - a.acquired_day), a.condition),
-        leaseDaily: a.leased ? leaseDaily(t) : 0, seatMap: seatMap(t, a.seats_j, a.seats_f), maintenanceCost: maintenanceCost(t, a.condition),
+        flights: flightsOf.all(a.id), leaseDaily: a.leased ? leaseDaily(t) : 0, seatMap: seatMap(t, a.seats_j, a.seats_f), maintenanceCost: maintenanceCost(t, a.condition),
       };
     });
     const routes = db.prepare('SELECT * FROM routes WHERE airline_id = ? ORDER BY id').all(airline.id).map((r) => {
@@ -190,23 +191,33 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     return { ok: true, deliveryDays: delivery - day };
   });
 
+  // Ustawia liczbę rotacji samolotu na jednej trasie (0 = zdejmuje go z tej trasy).
+  // routeId = null zdejmuje samolot ze wszystkich tras.
   on('POST', '/api/aircraft/:id/assign', async (ctx) => {
     const { routeId, roundTrips } = await readJson(ctx.req);
     const airline = requireAirline(ctx);
     const ac = myAircraft(ctx, airline);
     if (routeId == null) {
-      db.prepare('UPDATE aircraft SET route_id = NULL, round_trips = 0 WHERE id = ?').run(ac.id);
+      db.prepare('DELETE FROM flights WHERE aircraft_id = ?').run(ac.id);
+      return { ok: true };
+    }
+    const r = db.prepare('SELECT * FROM routes WHERE id = ? AND airline_id = ?').get(Number(routeId), airline.id) || fail(404, 'Nie znaleziono trasy');
+    if (roundTrips === 0) {
+      db.prepare('DELETE FROM flights WHERE aircraft_id = ? AND route_id = ?').run(ac.id, r.id);
       return { ok: true };
     }
     if (ac.delivery_day > currentDay(db)) fail(400, 'Ten samolot nie został jeszcze dostarczony');
-    const r = db.prepare('SELECT * FROM routes WHERE id = ? AND airline_id = ?').get(Number(routeId), airline.id) || fail(404, 'Nie znaleziono trasy');
     const t = AIRCRAFT_TYPES[ac.type_id];
     const dist = distanceKm(r.origin, r.dest);
     if (dist > t.rangeKm) fail(400, `Za mały zasięg: ${t.rangeKm} km, trasa ma ${dist} km`);
-    const max = maxRoundTrips(t, dist);
+    const usedHours = db.prepare('SELECT f.round_trips, r.origin, r.dest FROM flights f JOIN routes r ON r.id = f.route_id WHERE f.aircraft_id = ? AND f.route_id != ?')
+      .all(ac.id, r.id).reduce((h, f) => h + f.round_trips * roundTripHours(t, distanceKm(f.origin, f.dest)), 0);
+    const max = maxRoundTrips(t, dist, RULES.operatingHours - usedHours);
+    if (!max) fail(400, 'Ten samolot nie ma już wolnych godzin na tę trasę');
     const n = Number(roundTrips ?? max);
-    if (!(n > 0 && n <= max && (Number.isInteger(n) || n === 0.5))) fail(400, `Liczba rotacji dziennie: od 1 do ${max}`);
-    db.prepare('UPDATE aircraft SET route_id = ?, round_trips = ? WHERE id = ?').run(r.id, n, ac.id);
+    if (!(n > 0 && n <= max && (Number.isInteger(n) || n === 0.5))) fail(400, `Liczba rotacji dziennie na tej trasie: od ${max < 1 ? 0.5 : 1} do ${max}`);
+    db.prepare('INSERT INTO flights(aircraft_id, route_id, round_trips) VALUES (?, ?, ?) ON CONFLICT(aircraft_id, route_id) DO UPDATE SET round_trips = excluded.round_trips')
+      .run(ac.id, r.id, n);
     return { ok: true };
   });
 
@@ -271,7 +282,8 @@ export function createApp({ db, clock = null, secureCookies = false }) {
         if (ac.airline_id === airline.id) fail(400, 'To Twój samolot');
         spend(airline, l.price);
         db.prepare('UPDATE airlines SET cash = cash + ? WHERE id = ?').run(l.price, ac.airline_id);
-        db.prepare('UPDATE aircraft SET airline_id = ?, route_id = NULL, round_trips = 0 WHERE id = ?').run(airline.id, ac.id);
+        db.prepare('UPDATE aircraft SET airline_id = ? WHERE id = ?').run(airline.id, ac.id);
+        db.prepare('DELETE FROM flights WHERE aircraft_id = ?').run(ac.id);
         const seller = db.prepare('SELECT name FROM airlines WHERE id = ?').get(ac.airline_id);
         addNews(db, `${airline.name} kupuje używany ${AIRCRAFT_TYPES[ac.type_id].name} od ${seller.name}.`);
       } else {
@@ -356,7 +368,6 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     await readJson(ctx.req);
     const airline = requireAirline(ctx);
     tx(db, () => {
-      db.prepare('UPDATE aircraft SET route_id = NULL, round_trips = 0 WHERE route_id = ? AND airline_id = ?').run(Number(ctx.params.id), airline.id);
       const r = db.prepare('DELETE FROM routes WHERE id = ? AND airline_id = ?').run(Number(ctx.params.id), airline.id);
       if (!r.changes) fail(404, 'Nie znaleziono trasy');
     });

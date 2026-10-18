@@ -35,6 +35,8 @@ Zmienne środowiskowe:
   swoje maszyny innym graczom za własną cenę.
 - **Klasy podróży**: ekonomiczna, biznes i pierwsza. Każdy samolot ma własny układ foteli (fotel biznes zajmuje 2 miejsca
   ekonomiczne, pierwszej klasy 3), a każda trasa ma trzy ceny biletów. Na długich trasach popyt na klasy premium jest większy.
+- **Trasy i rotacje**: samolot lata na jednej lub kilku trasach z własnych baz. Każda rotacja (lot tam i z powrotem)
+  zajmuje czas lotu plus obsługę na lotnisku, a suma nie może przekroczyć 20 godzin na dobę.
 - **Stan techniczny**: samoloty zużywają się podczas lotów. Zużyte kosztują więcej, mogą się zepsuć i obniżają reputację.
   Przegląd przywraca 100% i trwa 2 dni; można włączyć automatyczne przeglądy poniżej wybranego progu.
 - **Świat**: cena paliwa zmienia się codziennie, popyt zależy od sezonu (wakacje i grudzień to szczyt), a losowe

@@ -129,5 +129,19 @@ export function openDb(file) {
   addColumn('aircraft', 'condition', 'REAL NOT NULL DEFAULT 100');
   addColumn('aircraft', 'delivery_day', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('aircraft', 'maintenance_until', 'INTEGER NOT NULL DEFAULT 0');
+
+  // Samolot może latać na kilku trasach: przypisania trzymamy w osobnej tabeli.
+  // Stare kolumny aircraft.route_id / round_trips przenosimy tu przy pierwszym starcie.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS flights (
+      aircraft_id INTEGER NOT NULL REFERENCES aircraft(id) ON DELETE CASCADE,
+      route_id INTEGER NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+      round_trips REAL NOT NULL,
+      PRIMARY KEY (aircraft_id, route_id)
+    );
+    INSERT OR IGNORE INTO flights(aircraft_id, route_id, round_trips)
+      SELECT id, route_id, round_trips FROM aircraft WHERE route_id IS NOT NULL AND round_trips > 0;
+    UPDATE aircraft SET route_id = NULL, round_trips = 0 WHERE route_id IS NOT NULL;
+  `);
   return db;
 }

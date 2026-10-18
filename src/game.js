@@ -70,11 +70,17 @@ export function classShare(cls, dist) {
 }
 
 // Ile rotacji (lot tam i z powrotem) dziennie zrobi samolot na danej trasie.
-export function maxRoundTrips(type, dist) {
-  const rtHours = 2 * (dist / type.speed + RULES.turnaroundHours);
-  const n = Math.floor(RULES.operatingHours / rtHours);
+// Godziny na dobę, które zajmuje jedna rotacja (lot tam i z powrotem z obsługą).
+export function roundTripHours(type, dist) {
+  return 2 * (dist / type.speed + RULES.turnaroundHours);
+}
+
+// Ile rotacji dziennie zmieści się w podanej liczbie wolnych godzin.
+export function maxRoundTrips(type, dist, hoursLeft = RULES.operatingHours) {
+  const rtHours = roundTripHours(type, dist);
+  const n = Math.floor(hoursLeft / rtHours + 1e-9);
   if (n >= 1) return n;
-  return rtHours <= 2 * RULES.operatingHours ? 0.5 : 0; // rejs co drugi dzień
+  return rtHours / 2 <= hoursLeft + 1e-9 ? 0.5 : 0; // rejs co drugi dzień
 }
 
 // Koszt jednego lotu (w jedną stronę): paliwo/obsługa + opłaty lotniskowe.
@@ -270,6 +276,11 @@ export function runTick(db, rng = Math.random) {
     // Automatyczne przeglądy samolotów, których stan spadł poniżej progu ustawionego przez gracza.
     const startMaint = db.prepare('UPDATE aircraft SET condition = 100, maintenance_until = ? WHERE id = ?');
     const updAc = db.prepare('UPDATE aircraft SET condition = ? WHERE id = ?');
+    const flights = new Map();
+    for (const f of db.prepare('SELECT * FROM flights').all()) {
+      if (!flights.has(f.aircraft_id)) flights.set(f.aircraft_id, []);
+      flights.get(f.aircraft_id).push(f);
+    }
     for (const ac of db.prepare('SELECT * FROM aircraft').all()) {
       if (ac.delivery_day > day) continue; // jeszcze w fabryce
       const t = AIRCRAFT_TYPES[ac.type_id];
@@ -285,8 +296,8 @@ export function runTick(db, rng = Math.random) {
       al.costs += t.dailyFixed * (1 + (100 - ac.condition) / 200) + (ac.leased ? leaseDaily(t) : 0);
       al.condSum += ac.condition;
       al.condN++;
-      const r = ac.route_id && routes.get(ac.route_id);
-      if (inMaint || !r) {
+      const legs = (flights.get(ac.id) || []).map((f) => [routes.get(f.route_id), f.round_trips]).filter(([r]) => r);
+      if (inMaint || !legs.length) {
         if (!inMaint) updAc.run(Math.max(0, ac.condition - dailyWear(0)), ac.id);
         continue;
       }
@@ -297,9 +308,13 @@ export function runTick(db, rng = Math.random) {
         continue;
       }
       const s = seatMap(t, ac.seats_j, ac.seats_f);
-      for (const c of CLASSES) r.seats[c] += s[c] * ac.round_trips;
-      r.cost += 2 * ac.round_trips * legCost(t, r.dist, fuel);
-      updAc.run(Math.max(0, ac.condition - dailyWear(ac.round_trips)), ac.id);
+      let trips = 0;
+      for (const [r, n] of legs) {
+        for (const c of CLASSES) r.seats[c] += s[c] * n;
+        r.cost += 2 * n * legCost(t, r.dist, fuel);
+        trips += n;
+      }
+      updAc.run(Math.max(0, ac.condition - dailyWear(trips)), ac.id);
     }
 
     const markets = new Map();
