@@ -54,9 +54,18 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     if (!a) fail(400, 'Najpierw załóż linię lotniczą');
     return a;
   }
-  function spend(airline, amount) {
+  // Zapis operacji gotówkowej w dzienniku linii (+ wpływ, − wydatek).
+  function ledger(airlineId, amount, text) {
+    db.prepare('INSERT INTO ledger(airline_id, day, amount, text) VALUES (?, ?, ?, ?)').run(airlineId, currentDay(db), amount, text);
+  }
+  function spend(airline, amount, text) {
     if (airline.cash < amount) fail(400, `Brak środków (potrzeba ${money(amount)})`);
     db.prepare('UPDATE airlines SET cash = cash - ? WHERE id = ?').run(amount, airline.id);
+    ledger(airline.id, -amount, text);
+  }
+  function earn(airlineId, amount, text) {
+    db.prepare('UPDATE airlines SET cash = cash + ? WHERE id = ?').run(amount, airlineId);
+    ledger(airlineId, amount, text);
   }
   function airportOr400(code) {
     const a = AIRPORTS[String(code || '').toUpperCase()];
@@ -184,7 +193,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     const delivery = day + RULES.deliveryDays[t.cat];
     tx(db, () => {
       const airline = requireAirline(ctx);
-      spend(airline, mode === 'buy' ? t.price : t.price * RULES.leaseDepositPct);
+      spend(airline, mode === 'buy' ? t.price : t.price * RULES.leaseDepositPct, `${mode === 'buy' ? 'Zakup' : 'Leasing (wpłata)'}: ${t.name}`);
       db.prepare('INSERT INTO aircraft(airline_id, type_id, leased, acquired_day, delivery_day) VALUES (?, ?, ?, ?, ?)')
         .run(airline.id, t.id, mode === 'lease' ? 1 : 0, delivery, delivery);
     });
@@ -240,7 +249,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       if (ac.delivery_day > day) fail(400, 'Ten samolot nie został jeszcze dostarczony');
       if (ac.maintenance_until > day) fail(400, 'Samolot jest już na przeglądzie');
       if (ac.condition >= 99) fail(400, 'Samolot jest w idealnym stanie');
-      spend(airline, maintenanceCost(AIRCRAFT_TYPES[ac.type_id], ac.condition));
+      spend(airline, maintenanceCost(AIRCRAFT_TYPES[ac.type_id], ac.condition), `Przegląd: ${AIRCRAFT_TYPES[ac.type_id].name} #${ac.id}`);
       db.prepare('UPDATE aircraft SET condition = 100, maintenance_until = ? WHERE id = ?').run(day + RULES.maintenanceDays, ac.id);
     });
     return { ok: true };
@@ -251,8 +260,8 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       const airline = requireAirline(ctx);
       const ac = myAircraft(ctx, airline);
       const t = AIRCRAFT_TYPES[ac.type_id];
-      if (ac.leased) spend(airline, leaseDaily(t) * RULES.earlyReturnLeaseDays);
-      else db.prepare('UPDATE airlines SET cash = cash + ? WHERE id = ?').run(aircraftValue(t, Math.max(0, currentDay(db) - ac.acquired_day), ac.condition), airline.id);
+      if (ac.leased) spend(airline, leaseDaily(t) * RULES.earlyReturnLeaseDays, `Kara za zwrot leasingu: ${t.name} #${ac.id}`);
+      else earn(airline.id, aircraftValue(t, Math.max(0, currentDay(db) - ac.acquired_day), ac.condition), `Sprzedaż brokerowi: ${t.name} #${ac.id}`);
       db.prepare('DELETE FROM aircraft WHERE id = ?').run(ac.id);
     });
     return { ok: true };
@@ -280,14 +289,14 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       if (l.aircraft_id) {
         const ac = db.prepare('SELECT * FROM aircraft WHERE id = ?').get(l.aircraft_id);
         if (ac.airline_id === airline.id) fail(400, 'To Twój samolot');
-        spend(airline, l.price);
-        db.prepare('UPDATE airlines SET cash = cash + ? WHERE id = ?').run(l.price, ac.airline_id);
+        spend(airline, l.price, `Zakup używanego: ${AIRCRAFT_TYPES[ac.type_id].name}`);
+        earn(ac.airline_id, l.price, `Sprzedaż na rynku wtórnym: ${AIRCRAFT_TYPES[ac.type_id].name} #${ac.id}`);
         db.prepare('UPDATE aircraft SET airline_id = ? WHERE id = ?').run(airline.id, ac.id);
         db.prepare('DELETE FROM flights WHERE aircraft_id = ?').run(ac.id);
         const seller = db.prepare('SELECT name FROM airlines WHERE id = ?').get(ac.airline_id);
         addNews(db, `${airline.name} kupuje używany ${AIRCRAFT_TYPES[ac.type_id].name} od ${seller.name}.`);
       } else {
-        spend(airline, l.price);
+        spend(airline, l.price, `Zakup używanego: ${AIRCRAFT_TYPES[l.type_id].name}`);
         db.prepare('INSERT INTO aircraft(airline_id, type_id, leased, acquired_day, condition) VALUES (?, ?, 0, ?, ?)')
           .run(airline.id, l.type_id, day - l.age_days, l.condition);
       }
@@ -381,11 +390,34 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     tx(db, () => {
       const airline = requireAirline(ctx);
       if (db.prepare('SELECT 1 FROM bases WHERE airline_id = ? AND airport = ?').get(airline.id, code)) fail(409, 'Już masz tu bazę');
-      spend(airline, AIRPORTS[code].size * RULES.baseCostPerSize);
+      spend(airline, AIRPORTS[code].size * RULES.baseCostPerSize, `Nowa baza: ${AIRPORTS[code].city} (${code})`);
       db.prepare('INSERT INTO bases(airline_id, airport) VALUES (?, ?)').run(airline.id, code);
       addNews(db, `${airline.name} otwiera nową bazę: ${AIRPORTS[code].city} (${code}).`);
     });
     return { ok: true };
+  });
+
+  // Szczegółowe finanse: wyniki dzienne z podziałem, dziennik operacji, wyniki tras i flota.
+  on('GET', '/api/finance', (ctx) => {
+    const airline = requireAirline(ctx);
+    const day = currentDay(db);
+    const days = db.prepare('SELECT day, revenue, costs, pax, detail FROM daily_stats WHERE airline_id = ? ORDER BY day DESC LIMIT 60')
+      .all(airline.id).reverse().map((d) => ({ ...d, detail: d.detail ? JSON.parse(d.detail) : null }));
+    const entries = db.prepare('SELECT day, amount, text FROM ledger WHERE airline_id = ? ORDER BY id DESC LIMIT 40').all(airline.id);
+    const fleet = db.prepare('SELECT type_id, leased, acquired_day, condition, delivery_day FROM aircraft WHERE airline_id = ?').all(airline.id);
+    let fleetValue = 0, leasePerDay = 0, owned = 0, leased = 0;
+    for (const a of fleet) {
+      const t = AIRCRAFT_TYPES[a.type_id];
+      if (a.leased) { leased++; leasePerDay += leaseDaily(t); } else { owned++; fleetValue += aircraftValue(t, Math.max(0, day - a.acquired_day), a.condition); }
+    }
+    const planes = db.prepare('SELECT f.route_id, COUNT(*) AS n FROM flights f JOIN aircraft a ON a.id = f.aircraft_id WHERE a.airline_id = ? GROUP BY f.route_id').all(airline.id);
+    const routes = db.prepare('SELECT id, origin, dest, last_pax, last_seats, last_revenue, last_cost FROM routes WHERE airline_id = ?').all(airline.id)
+      .map((r) => ({ ...r, planes: planes.find((x) => x.route_id === r.id)?.n || 0 }));
+    return {
+      day, cash: airline.cash, debt: airline.debt, fleetValue, leasePerDay, owned, leased,
+      value: companyValue(db, airline, day), interestPerDay: (airline.debt * RULES.loanInterestYear) / 365,
+      days, entries, routes,
+    };
   });
 
   on('POST', '/api/loan', async (ctx) => {
@@ -395,8 +427,8 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       const airline = requireAirline(ctx);
       if (amount > 0 && airline.debt + amount > RULES.maxDebt) fail(400, `Limit kredytu to ${money(RULES.maxDebt)}`);
       if (amount < 0 && -amount > airline.debt) fail(400, 'Nie możesz spłacić więcej niż wynosi dług');
-      if (amount < 0) spend(airline, -amount);
-      else db.prepare('UPDATE airlines SET cash = cash + ? WHERE id = ?').run(amount, airline.id);
+      if (amount < 0) spend(airline, -amount, 'Spłata kredytu');
+      else earn(airline.id, amount, 'Nowy kredyt');
       db.prepare('UPDATE airlines SET debt = debt + ? WHERE id = ?').run(amount, airline.id);
     });
     return { ok: true };

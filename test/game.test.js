@@ -211,6 +211,15 @@ test('jeden samolot na kilku trasach', async () => {
   const data = (await a('GET', '/api/airline')).data;
   assert.equal(data.fleet[0].flights.length, 2);
   assert.ok(data.routes.every((r) => r.last_seats > 0 && r.last_pax > 0));
+  // Finanse: podział wyniku dnia i dziennik operacji.
+  const fin = (await a('GET', '/api/finance')).data;
+  const d = fin.days[fin.days.length - 1];
+  assert.ok(d.detail.rev_y > 0 && d.detail.fuel > 0 && d.detail.fixed > 0);
+  const parts = ['fuel', 'ops', 'fees', 'fixed', 'lease', 'maint', 'interest'].reduce((s, k) => s + d.detail[k], 0);
+  assert.ok(Math.abs(parts - d.costs) < 10);
+  assert.equal(fin.routes.find((r) => r.id === prg).planes, 1);
+  assert.equal(fin.entries[0].text, 'Zakup: Airbus A320neo');
+  assert.equal(fin.entries[0].amount, -AIRCRAFT_TYPES.A320.price);
   // Zamknięcie trasy i zdjęcie z trasy usuwają przypisania.
   assert.equal((await a('DELETE', `/api/routes/${ber}`)).status, 200);
   assert.deepEqual((await a('GET', '/api/airline')).data.fleet[0].flights.map((f) => f.route_id), [prg]);

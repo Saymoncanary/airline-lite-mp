@@ -130,6 +130,19 @@ export function openDb(file) {
   addColumn('aircraft', 'delivery_day', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('aircraft', 'maintenance_until', 'INTEGER NOT NULL DEFAULT 0');
 
+  addColumn('daily_stats', 'detail', 'TEXT');
+  // Dziennik operacji gotówkowych poza codziennym wynikiem (zakupy, sprzedaż, kredyty...).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ledger (
+      id INTEGER PRIMARY KEY,
+      airline_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,
+      day INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      text TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ledger_airline ON ledger(airline_id, id);
+  `);
+
   // Samolot może latać na kilku trasach: przypisania trzymamy w osobnej tabeli.
   // Stare kolumny aircraft.route_id / round_trips przenosimy tu przy pierwszym starcie.
   db.exec(`

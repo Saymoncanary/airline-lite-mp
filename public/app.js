@@ -513,13 +513,87 @@ async function usedTab(el) {
   }, 'Kupione! Samolot czeka w hangarze.')));
 }
 
-function finance(el) {
-  const { airline, bases, stats } = state.data;
+const INCOME_ROWS = [['rev_y', 'Klasa ekonomiczna'], ['rev_j', 'Klasa biznes'], ['rev_f', 'Pierwsza klasa']];
+const COST_ROWS = [['fuel', 'Paliwo'], ['ops', 'Obsługa techniczna i załogi'], ['fees', 'Opłaty lotniskowe'],
+  ['fixed', 'Utrzymanie samolotów'], ['lease', 'Raty leasingu'], ['maint', 'Przeglądy i awarie'], ['interest', 'Odsetki od kredytu']];
+const COST_COLORS = { fuel: '#f59e0b', ops: '#3fa9f5', fees: '#a78bfa', fixed: '#64748b', lease: '#f472b6', maint: '#f06a6a', interest: '#94a3b8' };
+
+async function finance(el) {
+  const { airline, bases } = state.data;
   const R = state.st.rules;
-  const sum = (k) => stats.reduce((s, x) => s + x[k], 0);
+  if (!el.innerHTML) el.innerHTML = '<div class="card muted">Wczytuję finanse…</div>';
+  let F;
+  try { F = await api('GET', '/api/finance'); } catch (e) { el.innerHTML = `<div class="card neg">${esc(e.message)}</div>`; return; }
+  if (!el.isConnected) return; // gracz przełączył zakładkę
+  const last = (n) => F.days.slice(-n);
+  const total = (list, k) => list.reduce((s, d) => s + d[k], 0);
+  const part = (list, k) => list.reduce((s, d) => s + (d.detail?.[k] ?? 0), 0);
+  const periods = [['Ostatni dzień', last(1)], ['7 dni', last(7)], ['30 dni', last(30)]];
+  const margin = (list) => { const r = total(list, 'revenue'); return r ? (r - total(list, 'costs')) / r : 0; };
+  const lf = (list) => { const seats = part(list, 'seats'); return seats ? pct(total(list, 'pax') / seats) : '—'; };
+  const avg7 = last(7).length ? (total(last(7), 'revenue') - total(last(7), 'costs')) / last(7).length : 0;
+  const y = last(1)[0];
+
+  // Wykres przychodów i kosztów z ostatnich 30 dni.
+  const series = last(30);
+  const chart = () => {
+    if (series.length < 2) return '<p class="muted">Wykres pojawi się po kilku dniach gry.</p>';
+    const W = 600, H = 170, max = Math.max(1, ...series.map((d) => Math.max(d.revenue, d.costs)));
+    const x = (i) => 30 + (i / (series.length - 1)) * (W - 40), yy = (v) => H - 20 - (v / max) * (H - 35);
+    const path = (k) => series.map((d, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${yy(d[k]).toFixed(1)}`).join(' ');
+    return `<svg class="fin-chart" viewBox="0 0 ${W} ${H}">
+      <line x1="30" y1="${H - 20}" x2="${W - 10}" y2="${H - 20}" stroke="var(--line)"/>
+      <text x="2" y="${yy(max) + 4}" class="axis">${usd(max)}</text><text x="2" y="${H - 16}" class="axis">0</text>
+      <text x="30" y="${H - 3}" class="axis">${gameDate(series[0].day)}</text><text x="${W - 10}" y="${H - 3}" class="axis" text-anchor="end">${gameDate(series[series.length - 1].day)}</text>
+      <path d="${path('revenue')}" fill="none" stroke="var(--good)" stroke-width="2.5"/>
+      <path d="${path('costs')}" fill="none" stroke="var(--bad)" stroke-width="2.5"/>
+    </svg><div class="legend"><span class="pos">■ Przychody</span> <span class="neg">■ Koszty</span></div>`;
+  };
+  // Struktura kosztów (30 dni) jako pasek procentowy.
+  const costTotal = COST_ROWS.reduce((s, [k]) => s + part(series, k), 0);
+  const structure = costTotal ? `<div class="costbar">${COST_ROWS.map(([k, n]) => {
+    const v = part(series, k) / costTotal;
+    return v > 0.005 ? `<span style="width:${(v * 100).toFixed(1)}%;background:${COST_COLORS[k]}" title="${n}: ${pct(v)}"></span>` : '';
+  }).join('')}</div><div class="legend">${COST_ROWS.map(([k, n]) => part(series, k) > 0 ? `<span><i style="background:${COST_COLORS[k]}"></i>${n} ${pct(part(series, k) / costTotal)}</span>` : '').join('')}</div>` : '';
+
+  const routes = F.routes.map((r) => ({ ...r, profit: r.last_revenue - r.last_cost })).sort((a, b) => b.profit - a.profit);
+  const stat = (k, v, sub = '') => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="muted">${sub}</div>` : ''}</div>`;
   el.innerHTML = `
+    <div class="card"><h3>Podsumowanie</h3><div class="grid">
+      ${stat('Gotówka', usd(F.cash))}
+      ${stat('Dług', usd(F.debt), `odsetki ${usd(F.interestPerDay)}/dzień`)}
+      ${stat('Wartość floty', usd(F.fleetValue), `${F.owned} własnych · ${F.leased} w leasingu`)}
+      ${stat('Wartość firmy', usd(F.value), 'gotówka + flota − dług')}
+      ${stat('Wynik ostatniego dnia', y ? signed(y.revenue - y.costs) : '—')}
+      ${stat('Średni wynik (7 dni)', signed(avg7), 'na dzień')}
+      ${stat('Marża (30 dni)', pct(margin(series)))}
+      ${stat('Raty leasingu', usd(F.leasePerDay), 'na dzień')}
+    </div></div>
+    <div class="card"><h3>Rachunek wyników</h3><div class="table-wrap"><table class="pl">
+      <tr><th></th>${periods.map(([n]) => `<th class="num">${n}</th>`).join('')}</tr>
+      <tr><th colspan="4" class="group">Przychody</th></tr>
+      ${INCOME_ROWS.map(([k, n]) => `<tr><td>${n}</td>${periods.map(([, l]) => `<td class="num">${usd(part(l, k))}</td>`).join('')}</tr>`).join('')}
+      <tr class="sum"><td>Razem przychody</td>${periods.map(([, l]) => `<td class="num pos">${usd(total(l, 'revenue'))}</td>`).join('')}</tr>
+      <tr><th colspan="4" class="group">Koszty</th></tr>
+      ${COST_ROWS.map(([k, n]) => `<tr><td>${n}</td>${periods.map(([, l]) => `<td class="num">${usd(part(l, k))}</td>`).join('')}</tr>`).join('')}
+      <tr class="sum"><td>Razem koszty</td>${periods.map(([, l]) => `<td class="num neg">${usd(total(l, 'costs'))}</td>`).join('')}</tr>
+      <tr class="sum big"><td>Zysk netto</td>${periods.map(([, l]) => `<td class="num">${signed(total(l, 'revenue') - total(l, 'costs'))}</td>`).join('')}</tr>
+      <tr><td>Marża</td>${periods.map(([, l]) => `<td class="num">${pct(margin(l))}</td>`).join('')}</tr>
+      <tr><td>Pasażerowie</td>${periods.map(([, l]) => `<td class="num">${total(l, 'pax').toLocaleString('pl-PL')}</td>`).join('')}</tr>
+      <tr><td>Obłożenie</td>${periods.map(([, l]) => `<td class="num">${lf(l)}</td>`).join('')}</tr>
+    </table></div>
+    <p class="muted">Koszty z dni sprzed tej aktualizacji nie mają podziału na kategorie, więc w sumie mogą być wyższe niż suma pozycji.</p></div>
+    <div class="card"><h3>Przychody i koszty</h3>${chart()}<h3 style="margin-top:16px">Struktura kosztów (30 dni)</h3>${structure || '<p class="muted">Brak danych.</p>'}</div>
+    <div class="card"><h3>Wyniki tras (ostatni dzień)</h3>
+      ${routes.length ? `<div class="table-wrap"><table>
+        <tr><th>Trasa</th><th class="num">Samoloty</th><th class="num">Pasażerowie</th><th class="num">Obłożenie</th><th class="num">Przychód</th><th class="num">Koszt lotów</th><th class="num">Wynik</th><th class="num">Marża</th></tr>
+        ${routes.map((r) => `<tr><td>${r.origin} ⇄ ${r.dest}</td><td class="num">${r.planes}</td><td class="num">${r.last_pax.toLocaleString('pl-PL')}</td>
+          <td class="num">${r.last_seats ? pct(r.last_pax / r.last_seats) : '—'}</td><td class="num">${usd(r.last_revenue)}</td><td class="num">${usd(r.last_cost)}</td>
+          <td class="num">${signed(r.profit)}</td><td class="num">${r.last_revenue ? pct(r.profit / r.last_revenue) : '—'}</td></tr>`).join('')}
+      </table></div><p class="muted">Koszt lotów to paliwo, obsługa i opłaty lotniskowe. Utrzymanie samolotów, leasing i odsetki liczone są dla całej linii.</p>` : '<p class="muted">Nie masz jeszcze tras.</p>'}
+    </div>
     <div class="card"><h3>Kredyt</h3>
-      <p>Zadłużenie: <b>${usd(airline.debt)}</b> z limitu ${usd(R.maxDebt)} · oprocentowanie ${R.loanInterestYear * 100}% rocznie (naliczane codziennie).</p>
+      <p>Zadłużenie: <b>${usd(airline.debt)}</b> z limitu ${usd(R.maxDebt)} (możesz pożyczyć jeszcze ${usd(R.maxDebt - airline.debt)}) · oprocentowanie ${R.loanInterestYear * 100}% rocznie, czyli ${usd(F.interestPerDay)} dziennie.</p>
       <div class="row">
         <label>Kwota (mln USD)<input id="loan" type="number" min="1" value="10" style="width:120px"></label>
         <button id="borrow">Weź kredyt</button>
@@ -533,8 +607,10 @@ function finance(el) {
         <button id="openbase">Otwórz bazę</button>
       </div>
     </div>
-    <div class="card"><h3>Wyniki z ostatnich ${stats.length} dni</h3>
-      <p>Przychody: <b>${usd(sum('revenue'))}</b> · Koszty: <b>${usd(sum('costs'))}</b> · Zysk: <b>${signed(sum('revenue') - sum('costs'))}</b> · Pasażerowie: <b>${sum('pax').toLocaleString('pl-PL')}</b></p>
+    <div class="card"><h3>Historia operacji</h3>
+      ${F.entries.length ? `<div class="table-wrap"><table>
+        ${F.entries.map((e) => `<tr><td class="muted">${gameDate(e.day)}</td><td>${esc(e.text)}</td><td class="num">${signed(e.amount)}</td></tr>`).join('')}
+      </table></div>` : '<p class="muted">Zakupy, sprzedaże, kredyty i nowe bazy pojawią się tutaj.</p>'}
     </div>`;
   const amt = () => Math.round(Number($('#loan').value) * 1e6);
   $('#borrow').onclick = () => act(() => api('POST', '/api/loan', { amount: amt() }), 'Kredyt przyznany');

@@ -85,8 +85,21 @@ export function maxRoundTrips(type, dist, hoursLeft = RULES.operatingHours) {
 
 // Koszt jednego lotu (w jedną stronę): paliwo/obsługa + opłaty lotniskowe.
 // fuel to indeks ceny paliwa (1 = normalna cena).
+// Składniki dziennego wyniku linii zapisywane w daily_stats.detail.
+export const COST_PARTS = ['rev_y', 'rev_j', 'rev_f', 'fuel', 'ops', 'fees', 'fixed', 'lease', 'maint', 'interest'];
+
 export function legCost(type, dist, fuel = 1) {
-  return type.costPerKm * dist * (1 - RULES.fuelShare + RULES.fuelShare * fuel) + 500 + type.seats * 8;
+  const c = legCostParts(type, dist, fuel);
+  return c.fuel + c.ops + c.fees;
+}
+
+// To samo w podziale na paliwo, obsługę techniczną/załogę i opłaty lotniskowe.
+export function legCostParts(type, dist, fuel = 1) {
+  return {
+    fuel: type.costPerKm * dist * RULES.fuelShare * fuel,
+    ops: type.costPerKm * dist * (1 - RULES.fuelShare),
+    fees: 500 + type.seats * 8,
+  };
 }
 
 export function leaseDaily(type) {
@@ -259,7 +272,7 @@ export function runTick(db, rng = Math.random) {
 
     const airlines = new Map(
       db.prepare('SELECT a.*, m.alliance_id FROM airlines a LEFT JOIN alliance_members m ON m.airline_id = a.id').all()
-        .map((a) => [a.id, { ...a, revenue: 0, costs: 0, pax: 0, seats: 0, condSum: 0, condN: 0, breakdowns: 0 }])
+        .map((a) => [a.id, { ...a, revenue: 0, costs: 0, pax: 0, seats: 0, condSum: 0, condN: 0, breakdowns: 0, parts: Object.fromEntries(COST_PARTS.map((k) => [k, 0])) }])
     );
     const basesByAirline = new Map();
     for (const b of db.prepare('SELECT * FROM bases').all()) {
@@ -269,7 +282,7 @@ export function runTick(db, rng = Math.random) {
     const routes = new Map(
       db.prepare('SELECT * FROM routes').all().map((r) => [r.id, {
         ...r, dist: distanceKm(r.origin, r.dest), prices: routePrices(r),
-        seats: { y: 0, j: 0, f: 0 }, cost: 0, pax: { y: 0, j: 0, f: 0 }, revenue: 0,
+        seats: { y: 0, j: 0, f: 0 }, cost: 0, pax: { y: 0, j: 0, f: 0 }, revenue: 0, rev: { y: 0, j: 0, f: 0 }, parts: { fuel: 0, ops: 0, fees: 0 },
       }])
     );
 
@@ -287,13 +300,14 @@ export function runTick(db, rng = Math.random) {
       const al = airlines.get(ac.airline_id);
       const inMaint = ac.maintenance_until >= day;
       if (!inMaint && al.auto_maint > 0 && ac.condition < al.auto_maint) {
-        al.costs += maintenanceCost(t, ac.condition);
+        al.parts.maint += maintenanceCost(t, ac.condition);
         startMaint.run(day + RULES.maintenanceDays - 1, ac.id);
         al.condSum += 100;
         al.condN++;
         continue;
       }
-      al.costs += t.dailyFixed * (1 + (100 - ac.condition) / 200) + (ac.leased ? leaseDaily(t) : 0);
+      al.parts.fixed += t.dailyFixed * (1 + (100 - ac.condition) / 200);
+      if (ac.leased) al.parts.lease += leaseDaily(t);
       al.condSum += ac.condition;
       al.condN++;
       const legs = (flights.get(ac.id) || []).map((f) => [routes.get(f.route_id), f.round_trips]).filter(([r]) => r);
@@ -304,14 +318,16 @@ export function runTick(db, rng = Math.random) {
       // Mocno zużyty samolot może się zepsuć i nie polecieć.
       if (ac.condition < 30 && rng() < (30 - ac.condition) / 60) {
         al.breakdowns++;
-        al.costs += maintenanceCost(t, ac.condition) * 0.2;
+        al.parts.maint += maintenanceCost(t, ac.condition) * 0.2;
         continue;
       }
       const s = seatMap(t, ac.seats_j, ac.seats_f);
       let trips = 0;
       for (const [r, n] of legs) {
         for (const c of CLASSES) r.seats[c] += s[c] * n;
-        r.cost += 2 * n * legCost(t, r.dist, fuel);
+        const c = legCostParts(t, r.dist, fuel);
+        for (const k of ['fuel', 'ops', 'fees']) r.parts[k] += 2 * n * c[k];
+        r.cost += 2 * n * (c.fuel + c.ops + c.fees);
         trips += n;
       }
       updAc.run(Math.max(0, ac.condition - dailyWear(trips)), ac.id);
@@ -343,7 +359,8 @@ export function runTick(db, rng = Math.random) {
         const pax = allocateMarket(demand * classShare(c, dist), classFare(c, dist), offers);
         flying.forEach((r, i) => {
           r.pax[c] = Math.round(pax[i] * 2); // oba kierunki
-          r.revenue += r.pax[c] * r.prices[c];
+          r.rev[c] = r.pax[c] * r.prices[c];
+          r.revenue += r.rev[c];
         });
       }
     }
@@ -356,15 +373,17 @@ export function runTick(db, rng = Math.random) {
       updRoute.run(pax, seats, r.revenue, r.cost, JSON.stringify(detail), r.id);
       const al = airlines.get(r.airline_id);
       al.revenue += r.revenue;
-      al.costs += r.cost;
+      for (const c of CLASSES) al.parts['rev_' + c] += r.rev[c];
+      for (const k of ['fuel', 'ops', 'fees']) al.parts[k] += r.parts[k];
       al.pax += pax;
       al.seats += seats;
     }
 
     const updAirline = db.prepare('UPDATE airlines SET cash = ?, reputation = ? WHERE id = ?');
-    const insStat = db.prepare('INSERT OR REPLACE INTO daily_stats(airline_id, day, revenue, costs, pax) VALUES (?, ?, ?, ?, ?)');
+    const insStat = db.prepare('INSERT OR REPLACE INTO daily_stats(airline_id, day, revenue, costs, pax, detail) VALUES (?, ?, ?, ?, ?, ?)');
     for (const al of airlines.values()) {
-      al.costs += (al.debt * RULES.loanInterestYear) / 365;
+      al.parts.interest += (al.debt * RULES.loanInterestYear) / 365;
+      al.costs = COST_PARTS.filter((k) => !k.startsWith('rev_')).reduce((s, k) => s + al.parts[k], 0);
       const profit = al.revenue - al.costs;
       const lf = al.seats ? al.pax / al.seats : 0;
       let rep = al.reputation;
@@ -373,7 +392,8 @@ export function runTick(db, rng = Math.random) {
       rep -= 0.3 * al.breakdowns;
       rep = Math.min(100, Math.max(0, rep));
       updAirline.run(al.cash + profit, rep, al.id);
-      insStat.run(al.id, day, al.revenue, al.costs, al.pax);
+      const detail = Object.fromEntries(Object.entries(al.parts).map(([k, v]) => [k, Math.round(v)]));
+      insStat.run(al.id, day, al.revenue, al.costs, al.pax, JSON.stringify({ ...detail, seats: al.seats }));
     }
 
     refillUsedMarket(db, day, rng);
