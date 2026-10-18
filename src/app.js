@@ -4,7 +4,7 @@ import { join, normalize, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AIRPORTS, AIRCRAFT_TYPES } from './data.js';
 import {
-  RULES, CLASSES, MONTHS, LIVERY_LOGOS, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, roundTripHours, leaseDaily, aircraftValue,
+  RULES, CLASSES, MONTHS, LIVERY_LOGOS, isSlotAirport, slotCapacity, slotPrice, slotUsage, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, roundTripHours, leaseDaily, aircraftValue,
   seatMap, validSeatConfig, maintenanceCost, routePrices, seasonMult, gameMonth, activeEvents,
   pairKey, tx, currentDay, addNews, companyValue,
 } from './game.js';
@@ -128,6 +128,10 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       const { lastInsertRowid } = db.prepare('INSERT INTO airlines(user_id, name, code, hub, cash, founded_day, color1, color2) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(ctx.user.id, name, code, hub, RULES.startingCash, currentDay(db), c1, c2);
       db.prepare('INSERT INTO bases(airline_id, airport) VALUES (?, ?)').run(Number(lastInsertRowid), hub);
+      if (isSlotAirport(hub)) {
+        const free = Math.min(RULES.hubFreeSlots, slotCapacity(hub) - db.prepare('SELECT COALESCE(SUM(count), 0) AS n FROM slots WHERE airport = ?').get(hub).n);
+        if (free > 0) db.prepare('INSERT INTO slots(airline_id, airport, count) VALUES (?, ?, ?)').run(Number(lastInsertRowid), hub, free);
+      }
       addNews(db, `Nowa linia ${name} (${code}) startuje! Baza: ${AIRPORTS[hub].city} (${hub}).`);
     });
     return { ok: true };
@@ -150,6 +154,56 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     db.prepare('UPDATE airlines SET wage = ?, service = ?, loyalty = ? WHERE id = ?').run(wage, service, body.loyalty ? 1 : 0, requireAirline(ctx).id);
     return { ok: true };
   });
+
+  // --- Sloty ------------------------------------------------------------------
+  const slotsUsed = (code) => db.prepare('SELECT COALESCE(SUM(count), 0) AS n FROM slots WHERE airport = ?').get(code).n;
+  on('GET', '/api/slots', (ctx) => {
+    const airline = requireAirline(ctx);
+    const use = slotUsage(db, airline.id);
+    return Object.values(AIRPORTS).filter((a) => isSlotAirport(a.code)).map((a) => {
+      const used = slotsUsed(a.code);
+      return {
+        code: a.code, city: a.city, country: a.country, capacity: slotCapacity(a.code), used, price: slotPrice(a.code, used),
+        sellPrice: Math.round(slotPrice(a.code, Math.max(0, used - 1)) * RULES.slotSellBack),
+        mine: db.prepare('SELECT count FROM slots WHERE airline_id = ? AND airport = ?').get(airline.id, a.code)?.count || 0,
+        myUse: use.get(a.code) || 0,
+      };
+    }).sort((x, y) => y.mine - x.mine || x.city.localeCompare(y.city, 'pl'));
+  });
+
+  on('POST', '/api/slots', async (ctx) => {
+    const body = await readJson(ctx.req);
+    const code = airportOr400(body.airport), count = Number(body.count);
+    if (!isSlotAirport(code)) fail(400, 'To lotnisko nie ma limitu slotów');
+    if (!Number.isInteger(count) || count === 0 || Math.abs(count) > 20) fail(400, 'Liczba slotów: od 1 do 20');
+    tx(db, () => {
+      const airline = requireAirline(ctx);
+      const mine = db.prepare('SELECT count FROM slots WHERE airline_id = ? AND airport = ?').get(airline.id, code)?.count || 0;
+      let used = slotsUsed(code), total = 0;
+      if (count > 0) {
+        if (used + count > slotCapacity(code)) fail(400, `Na ${code} zostało tylko ${slotCapacity(code) - used} wolnych slotów`);
+        for (let i = 0; i < count; i++) total += slotPrice(code, used++);
+        spend(airline, total, `Zakup ${count} slotów: ${AIRPORTS[code].city} (${code})`);
+      } else {
+        const n = -count;
+        if (n > mine) fail(400, 'Nie masz tylu slotów');
+        if (mine - n < (slotUsage(db, airline.id).get(code) || 0)) fail(400, 'Te sloty są zajęte przez Twoje loty. Najpierw zmniejsz rotacje.');
+        for (let i = 0; i < n; i++) total += Math.round(slotPrice(code, --used) * RULES.slotSellBack);
+        earn(airline.id, total, `Sprzedaż ${n} slotów: ${AIRPORTS[code].city} (${code})`);
+      }
+      db.prepare('INSERT INTO slots(airline_id, airport, count) VALUES (?, ?, ?) ON CONFLICT(airline_id, airport) DO UPDATE SET count = count + excluded.count')
+        .run(airline.id, code, count);
+      db.prepare('DELETE FROM slots WHERE count <= 0').run();
+    });
+    return { ok: true };
+  });
+
+  // Linie, które latały na te lotniska przed wprowadzeniem slotów, dostają sloty za darmo.
+  for (const { id } of db.prepare('SELECT id FROM airlines').all()) {
+    for (const [ap, n] of slotUsage(db, id)) {
+      db.prepare('INSERT INTO slots(airline_id, airport, count) VALUES (?, ?, ?) ON CONFLICT(airline_id, airport) DO UPDATE SET count = MAX(count, excluded.count)').run(id, ap, n);
+    }
+  }
 
   // --- Marketing -------------------------------------------------------------
   on('GET', '/api/campaigns', (ctx) =>
@@ -275,6 +329,12 @@ export function createApp({ db, clock = null, secureCookies = false }) {
     if (!max) fail(400, 'Ten samolot nie ma już wolnych godzin na tę trasę');
     const n = Number(roundTrips ?? max);
     if (!(n > 0 && n <= max && (Number.isInteger(n) || n === 0.5))) fail(400, `Liczba rotacji dziennie na tej trasie: od ${max < 1 ? 0.5 : 1} do ${max}`);
+    const need = slotUsage(db, airline.id, { aircraft_id: ac.id, route_id: r.id, round_trips: n, origin: r.origin, dest: r.dest });
+    for (const ap of [r.origin, r.dest]) {
+      if (!isSlotAirport(ap)) continue;
+      const have = db.prepare('SELECT count FROM slots WHERE airline_id = ? AND airport = ?').get(airline.id, ap)?.count || 0;
+      if (need.get(ap) > have) fail(400, `Brak slotów na lotnisku ${ap}: masz ${have}, potrzeba ${need.get(ap)}. Kup sloty w zakładce „Trasy”.`);
+    }
     db.prepare('INSERT INTO flights(aircraft_id, route_id, round_trips) VALUES (?, ?, ?) ON CONFLICT(aircraft_id, route_id) DO UPDATE SET round_trips = excluded.round_trips')
       .run(ac.id, r.id, n);
     return { ok: true };

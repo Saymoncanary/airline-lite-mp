@@ -138,6 +138,12 @@ export function openDb(file) {
   addColumn('airlines', 'service', 'INTEGER NOT NULL DEFAULT 2');
   addColumn('airlines', 'loyalty', 'INTEGER NOT NULL DEFAULT 0');
   db.exec(`
+    CREATE TABLE IF NOT EXISTS slots (
+      airline_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,
+      airport TEXT NOT NULL,
+      count INTEGER NOT NULL,
+      PRIMARY KEY (airline_id, airport)
+    );
     CREATE TABLE IF NOT EXISTS campaigns (
       id INTEGER PRIMARY KEY,
       airline_id INTEGER NOT NULL REFERENCES airlines(id) ON DELETE CASCADE,

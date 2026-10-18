@@ -74,6 +74,13 @@ test('pełna rozgrywka dwóch graczy z konkurencją', async () => {
   assert.equal((await a('POST', `/api/aircraft/${fa.id}/assign`, { routeId: ra.data.id })).status, 400);
   for (let i = 0; i < 5; i++) runTick(db, calm);
   assert.equal((await a('POST', `/api/aircraft/${fa.id}/assign`, { routeId: ra.data.id, roundTrips: 99 })).status, 400);
+  // Londyn ma limit slotów: bez nich nie da się latać, baza w LHR dostaje sloty na start.
+  assert.equal((await a('POST', `/api/aircraft/${fa.id}/assign`, { routeId: ra.data.id })).status, 400);
+  const slots = (await a('GET', '/api/slots')).data.find((s) => s.code === 'LHR');
+  assert.equal(slots.used, 10);
+  assert.equal((await a('POST', '/api/slots', { airport: 'LHR', count: 6 })).status, 200);
+  assert.equal((await a('POST', '/api/slots', { airport: 'WAW', count: 1 })).status, 400);
+  assert.equal((await a('GET', '/api/slots')).data.find((s) => s.code === 'LHR').mine, 6);
   assert.equal((await a('POST', `/api/aircraft/${fa.id}/assign`, { routeId: ra.data.id })).status, 200);
   assert.equal((await b('POST', `/api/aircraft/${fb.id}/assign`, { routeId: rb.data.id })).status, 200);
   // Nie można sterować cudzym samolotem.
@@ -135,6 +142,7 @@ test('klasy, przeglądy, rynek wtórny i sojusze', async () => {
   const cfg = await a('POST', `/api/aircraft/${ac.id}/config`, { j: 30, f: 8 });
   assert.deepEqual(cfg.data.seatMap, { y: 248 - 60 - 24, j: 30, f: 8 });
   const r = await a('POST', '/api/routes', { origin: 'WAW', dest: 'JFK' });
+  await a('POST', '/api/slots', { airport: 'JFK', count: 2 });
   assert.equal((await a('POST', `/api/aircraft/${ac.id}/assign`, { routeId: r.data.id })).status, 200);
   runTick(db, calm);
   const route = (await a('GET', '/api/airline')).data.routes[0];
@@ -259,6 +267,7 @@ test('personel, obsługa, reklama i program lojalnościowy', async () => {
   for (let i = 0; i < 6; i++) runTick(db, calm);
   const ac = (await a('GET', '/api/airline')).data.fleet[0];
   const r = (await a('POST', '/api/routes', { origin: 'WAW', dest: 'CDG' })).data.id;
+  await a('POST', '/api/slots', { airport: 'CDG', count: 6 });
   await a('POST', `/api/aircraft/${ac.id}/assign`, { routeId: r });
   assert.equal((await a('POST', '/api/airline/staff', { wage: 50, service: 2 })).status, 400);
   assert.equal((await a('POST', '/api/airline/staff', { wage: 120, service: 9 })).status, 400);

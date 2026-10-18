@@ -40,7 +40,34 @@ export const RULES = {
     { name: 'Duża', costPerDay: 250e3, appeal: 1.25 },
   ],
   campaignDays: 14, maxCampaigns: 5,
+  // Sloty: na największych lotniskach każda rotacja dziennie wymaga slotu. Liczba slotów jest
+  // ograniczona dla wszystkich linii razem, a cena rośnie, im mniej ich zostało.
+  slotMinSize: 9, slotCapacity: { 9: 60, 10: 40 }, slotBasePrice: { 9: 1e6, 10: 1.5e6 }, slotSellBack: 0.5,
+  hubFreeSlots: 10, // darmowe sloty dla nowej linii z bazą na takim lotnisku
 };
+
+export const isSlotAirport = (code) => AIRPORTS[code].size >= RULES.slotMinSize;
+export const slotCapacity = (code) => RULES.slotCapacity[AIRPORTS[code].size];
+
+// Cena kolejnego slotu, gdy zajętych jest już `used` z puli lotniska.
+export function slotPrice(code, used) {
+  const fill = used / slotCapacity(code);
+  return Math.round((RULES.slotBasePrice[AIRPORTS[code].size] * (1 + 3 * fill * fill)) / 1e4) * 1e4;
+}
+
+// Ile slotów na każdym lotnisku zużywają przypisania samolotów linii (rotacje dziennie, w górę).
+export function slotUsage(db, airlineId, override) {
+  const use = new Map();
+  const rows = db.prepare('SELECT f.aircraft_id, f.route_id, f.round_trips, r.origin, r.dest FROM flights f JOIN routes r ON r.id = f.route_id WHERE r.airline_id = ?').all(airlineId);
+  if (override) {
+    const i = rows.findIndex((x) => x.aircraft_id === override.aircraft_id && x.route_id === override.route_id);
+    if (i >= 0) rows.splice(i, 1);
+    if (override.round_trips > 0) rows.push(override);
+  }
+  for (const f of rows) for (const ap of [f.origin, f.dest]) if (isSlotAirport(ap)) use.set(ap, (use.get(ap) || 0) + f.round_trips);
+  for (const [k, v] of use) use.set(k, Math.ceil(v - 1e-9));
+  return use;
+}
 
 // Symbole do wyboru na stateczniku ('CODE' = kod linii).
 export const LIVERY_LOGOS = ['CODE', '★', '✈', '●', '▲', '◆', '✦', '❖', '✚', '☀', '♛', '⚡', '❄', '♥', '☘'];

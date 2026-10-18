@@ -305,7 +305,28 @@ function routesTab(el) {
       </table></div>
       <p class="muted">Obłożenie pokazuje „—”, gdy samoloty na trasie nie mają foteli danej klasy. Fotele ustawisz we „Flocie”.
         Gdy latasz z jednego lotniska do dwóch miast, część pasażerów między tymi miastami poleci z przesiadką i zajmie wolne miejsca ekonomiczne.</p>` : '<p class="muted">Nie masz jeszcze tras.</p>'}
+    </div>
+    <div class="card"><h3>Sloty na zatłoczonych lotniskach</h3>
+      <p class="muted">Na największych lotniskach każda rotacja dziennie potrzebuje slotu. Pula slotów jest wspólna dla wszystkich linii,
+        a każdy kolejny kosztuje więcej. Niepotrzebne sloty można sprzedać za ${Math.round(state.st.rules.slotSellBack * 100)}% ceny.</p>
+      <div id="slots" class="muted">Ładowanie…</div>
     </div>`;
+  api('GET', '/api/slots').then((list) => {
+    const box = $('#slots');
+    if (!box) return;
+    const row = (x) => `<tr class="${x.mine ? 'me' : ''}"><td>${esc(x.city)} (${x.code})<div class="muted">${esc(x.country)}</div></td>
+      <td class="num">${x.used} / ${x.capacity}</td><td class="num"><b>${x.mine}</b></td><td class="num">${x.myUse}</td>
+      <td class="num">${x.used < x.capacity ? usd(x.price) : '<span class="neg">brak</span>'}</td>
+      <td class="actions"><button data-slot="${x.code}" data-n="1" ${x.used < x.capacity ? '' : 'disabled'}>Kup 1</button>
+        <button class="secondary" data-slot="${x.code}" data-n="5" ${x.used + 5 <= x.capacity ? '' : 'disabled'}>Kup 5</button>
+        <button class="secondary" data-slot="${x.code}" data-n="-1" ${x.mine > x.myUse ? '' : 'disabled'} title="Odzyskasz ${usd(x.sellPrice)}">Sprzedaj 1</button></td></tr>`;
+    box.classList.remove('muted');
+    box.innerHTML = `<div class="table-wrap"><table>
+      <tr><th>Lotnisko</th><th class="num">Zajęte sloty (wszyscy)</th><th class="num">Twoje sloty</th><th class="num">Używasz</th><th class="num">Cena slotu</th><th></th></tr>
+      ${list.map(row).join('')}</table></div>`;
+    box.querySelectorAll('[data-slot]').forEach((b) => (b.onclick = () => act(() => api('POST', '/api/slots', { airport: b.dataset.slot, count: Number(b.dataset.n) }),
+      Number(b.dataset.n) > 0 ? 'Sloty kupione' : 'Slot sprzedany')));
+  });
 
   const showMarket = async () => {
     const o = $('#r-origin').value, d = $('#r-dest').value;
@@ -313,9 +334,11 @@ function routesTab(el) {
     try {
       const m = await api('GET', `/api/market?origin=${o}&dest=${d}`);
       for (const [c] of CLS) $(`#r-price-${c}`).placeholder = m.classes[c].fare;
+      const slotNote = [o, d].filter((c) => airport(c).size >= state.st.rules.slotMinSize)
+        .map((c) => `<br><span class="warn">${esc(airport(c).city)} (${c}) ma limit slotów: przed przypisaniem samolotu kup sloty (tabela niżej).</span>`).join('');
       $('#r-market').innerHTML = `Dystans ${m.distance.toLocaleString('pl-PL')} km · popyt dziennie w każdą stronę:
         ekonomiczna ${m.classes.y.demand} os. ($${m.classes.y.fare}), biznes ${m.classes.j.demand} os. ($${m.classes.j.fare}), pierwsza ${m.classes.f.demand} os. ($${m.classes.f.fare}).
-        ${m.competitors.length ? `<br>Konkurencja: ${m.competitors.map((c) => `${esc(c.name)} ($${c.prices.y} / $${c.prices.j} / $${c.prices.f}, ${c.seats} miejsc/dzień)`).join(', ')}` : '<br>Brak konkurencji na tej trasie.'}`;
+        ${m.competitors.length ? `<br>Konkurencja: ${m.competitors.map((c) => `${esc(c.name)} ($${c.prices.y} / $${c.prices.j} / $${c.prices.f}, ${c.seats} miejsc/dzień)`).join(', ')}` : '<br>Brak konkurencji na tej trasie.'}${slotNote}`;
     } catch (e) { $('#r-market').textContent = e.message; }
   };
   const fillCities = () => {
