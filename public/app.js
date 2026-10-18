@@ -451,12 +451,12 @@ function fleet(el) {
     const left = R.operatingHours - hoursUsed(a, t);
     // Samolot może dołączyć tylko trasę, która ma wspólne lotnisko z jego obecnymi trasami.
     const airports = new Set(a.flights.flatMap((f) => { const r = routeById(f.route_id); return [r.origin, r.dest]; }));
+    // Pokazujemy tylko trasy, które samolot faktycznie może obsłużyć.
     const opts = routes.filter((r) => !a.flights.some((f) => f.route_id === r.id)).map((r) => {
       const dist = distanceKm(r.origin, r.dest), max = maxRoundTrips(t, dist, left);
       const linked = !airports.size || airports.has(r.origin) || airports.has(r.dest);
-      const ok = dist <= t.rangeKm && max > 0 && linked;
-      const why = dist > t.rangeKm ? ' (za daleko)' : !linked ? ' (niepołączona z trasami samolotu)' : max > 0 ? ` (max ${max})` : ' (brak godzin)';
-      return `<option value="${r.id}" data-max="${max}" ${ok ? '' : 'disabled'}>${r.origin}–${r.dest}${why}</option>`;
+      if (dist > t.rangeKm || max <= 0 || !linked) return '';
+      return `<option value="${r.id}" data-max="${max}">${r.origin}–${r.dest} (max ${max})</option>`;
     }).join('');
     const add = opts && delivered
       ? `<div class="flight"><select data-add="${a.id}"><option value="">${a.flights.length ? '+ dodaj trasę' : '— w hangarze —'}</option>${opts}</select>
