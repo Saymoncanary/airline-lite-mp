@@ -422,13 +422,25 @@ function fleet(el) {
       : a.flights.length ? '' : '<span class="muted">— w hangarze —</span>';
     return lines + add;
   };
+  // Wynik samolotu z ostatniego dnia: jego część przychodu tras minus wszystkie jego koszty.
+  const profitCell = (a, delivered) => {
+    if (!delivered) return '<span class="muted">—</span>';
+    return `<b>${signed(a.last_revenue - a.last_cost)}</b>
+      <div class="muted">przychód ${usd(a.last_revenue)}</div><div class="muted">koszty ${usd(a.last_cost)}</div>
+      <div class="muted">${a.last_pax.toLocaleString('pl-PL')} pas. · łącznie ${signed(a.total_profit)}</div>`;
+  };
+  const working = planes.filter((a) => a.delivery_day <= day);
+  const ranked = [...working].sort((x, y) => (y.last_revenue - y.last_cost) - (x.last_revenue - x.last_cost));
+  const name = (a) => `${esc(type(a.type_id).name)} #${a.id}`;
   el.innerHTML = `<div class="card"><h3>Twoja flota</h3>
+    ${ranked.length > 1 ? `<p>Wczoraj najlepszy wynik miał <b>${name(ranked[0])}</b> (${signed(ranked[0].last_revenue - ranked[0].last_cost)}),
+      a najsłabszy <b>${name(ranked.at(-1))}</b> (${signed(ranked.at(-1).last_revenue - ranked.at(-1).last_cost)}).</p>` : ''}
     <div class="row">
       <label>Automatyczny przegląd, gdy stan spadnie poniżej (%)<input id="automaint" type="number" min="0" max="95" value="${airline.auto_maint}" style="width:90px"></label>
       <p class="muted">0 = wyłączone. Zużyte samoloty kosztują więcej, psują się i obniżają reputację.</p>
     </div>
     ${planes.length ? `<div class="table-wrap"><table>
-      <tr><th>#</th><th>Typ</th><th>Status</th><th>Stan</th><th>Fotele (biznes / pierwsza)</th><th>Trasy i rotacje/dzień</th><th>Wykorzystanie</th><th></th></tr>
+      <tr><th>#</th><th>Typ</th><th>Status</th><th>Stan</th><th>Fotele (biznes / pierwsza)</th><th>Trasy i rotacje/dzień</th><th>Wykorzystanie</th><th class="num">Zysk wczoraj</th><th></th></tr>
       ${planes.map((a) => {
         const t = type(a.type_id);
         const delivered = a.delivery_day <= day;
@@ -441,6 +453,7 @@ function fleet(el) {
             <div class="muted">${a.seatMap.y} E · ${a.seatMap.j} B · ${a.seatMap.f} P</div></td>
           <td>${flightsCell(a, t, delivered)}</td>
           <td>${usage(a, t)}</td>
+          <td class="num nowrap">${profitCell(a, delivered)}</td>
           <td class="actions">
             <button class="secondary" data-maint="${a.id}" ${delivered && a.maintenance_until <= day && a.condition < 99 ? '' : 'disabled'} title="Przegląd trwa ${R.maintenanceDays} dni">Przegląd ${usd(a.maintenanceCost)}</button>
             ${a.leased ? '' : a.listing_id ? `<button class="secondary" data-unlist="${a.id}">Wycofaj ofertę</button>` : `<button class="secondary" data-list="${a.id}" ${delivered ? '' : 'disabled'}>Wystaw na rynek</button>`}
@@ -449,7 +462,8 @@ function fleet(el) {
         </tr>`;
       }).join('')}
     </table></div>
-    <p class="muted">Wykorzystanie to część z ${R.operatingHours} godzin na dobę, którą samolot spędza w locie i na obsłudze między lotami. Im bliżej 100%, tym lepiej zarabia. Jeden samolot może latać na kilku trasach, dopóki starcza mu godzin. Rotacja = lot tam i z powrotem. Fotel biznes zajmuje ${R.classSpace.j}, a pierwszej klasy ${R.classSpace.f} miejsca ekonomiczne. „Sprzedaj” sprzedaje od razu brokerowi, „Wystaw na rynek” pozwala ustalić własną cenę dla innych graczy.</p>` : '<p class="muted">Nie masz jeszcze samolotów. Zajrzyj do „Nowe samoloty” albo na „Rynek wtórny”.</p>'}
+    <p class="muted">Wykorzystanie to część z ${R.operatingHours} godzin na dobę, którą samolot spędza w locie i na obsłudze między lotami. Im bliżej 100%, tym lepiej zarabia.
+      Zysk samolotu to jego część przychodu z tras (według liczby miejsc, które na nich oferuje) minus jego koszty: paliwo, załoga, opłaty, obsługa pasażerów, koszty stałe, leasing i przeglądy. „Łącznie” liczy się od zakupu. Jeden samolot może latać na kilku trasach, dopóki starcza mu godzin. Rotacja = lot tam i z powrotem. Fotel biznes zajmuje ${R.classSpace.j}, a pierwszej klasy ${R.classSpace.f} miejsca ekonomiczne. „Sprzedaj” sprzedaje od razu brokerowi, „Wystaw na rynek” pozwala ustalić własną cenę dla innych graczy.</p>` : '<p class="muted">Nie masz jeszcze samolotów. Zajrzyj do „Nowe samoloty” albo na „Rynek wtórny”.</p>'}
   </div>`;
 
   $('#automaint').onchange = (e) => act(() => api('POST', '/api/airline/settings', { autoMaint: Number(e.target.value) }), 'Ustawienie zapisane');

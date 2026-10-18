@@ -39,6 +39,8 @@ Zmienne środowiskowe:
   ekonomiczne, pierwszej klasy 3), a każda trasa ma trzy ceny biletów. Na długich trasach popyt na klasy premium jest większy.
 - **Trasy i rotacje**: samolot lata na jednej lub kilku trasach z własnych baz. Każda rotacja (lot tam i z powrotem)
   zajmuje czas lotu plus obsługę na lotnisku, a suma nie może przekroczyć 20 godzin na dobę.
+- **Wynik samolotu**: we Flocie każdy samolot ma swój zysk z ostatniego dnia (część przychodu tras według oferowanych
+  miejsc minus jego koszty) i łączny zysk od zakupu.
 - **Stan techniczny**: samoloty zużywają się podczas lotów. Zużyte kosztują więcej, mogą się zepsuć i obniżają reputację.
   Przegląd przywraca 100% i trwa 2 dni; można włączyć automatyczne przeglądy poniżej wybranego progu.
 - **Świat**: cena paliwa zmienia się codziennie, popyt zależy od sezonu (wakacje i grudzień to szczyt), a losowe

@@ -421,7 +421,7 @@ export function createApp({ db, clock = null, secureCookies = false }) {
         if (ac.airline_id === airline.id) fail(400, 'To Twój samolot');
         spend(airline, l.price, `Zakup używanego: ${AIRCRAFT_TYPES[ac.type_id].name}`);
         earn(ac.airline_id, l.price, `Sprzedaż na rynku wtórnym: ${AIRCRAFT_TYPES[ac.type_id].name} #${ac.id}`);
-        db.prepare('UPDATE aircraft SET airline_id = ? WHERE id = ?').run(airline.id, ac.id);
+        db.prepare('UPDATE aircraft SET airline_id = ?, total_profit = 0 WHERE id = ?').run(airline.id, ac.id);
         db.prepare('DELETE FROM flights WHERE aircraft_id = ?').run(ac.id);
         const seller = db.prepare('SELECT name FROM airlines WHERE id = ?').get(ac.airline_id);
         addNews(db, `${airline.name} kupuje używany ${AIRCRAFT_TYPES[ac.type_id].name} od ${seller.name}.`);

@@ -562,16 +562,22 @@ export function runTick(db, rng = Math.random, { seasonDays } = {}) {
       if (!flights.has(f.aircraft_id)) flights.set(f.aircraft_id, []);
       flights.get(f.aircraft_id).push(f);
     }
+    // Wynik każdego samolotu: jego koszty i część przychodu tras proporcjonalna do miejsc, które na nich oferuje.
+    const acStats = new Map();
     for (const ac of db.prepare('SELECT * FROM aircraft').all()) {
       if (ac.delivery_day > day) continue; // jeszcze w fabryce
       const t = AIRCRAFT_TYPES[ac.type_id];
       const al = airlines.get(ac.airline_id);
       const inMaint = ac.maintenance_until >= day;
       // Koszty stałe i leasing płaci się każdego dnia, także w dniu rozpoczęcia przeglądu.
-      al.parts.fixed += t.dailyFixed * (1 + (100 - ac.condition) / 200);
-      if (ac.leased) al.parts.lease += leaseDaily(t);
+      const fixed = t.dailyFixed * (1 + (100 - ac.condition) / 200), lease = ac.leased ? leaseDaily(t) : 0;
+      al.parts.fixed += fixed;
+      al.parts.lease += lease;
+      const st = { al, cost: fixed + lease, legs: [] };
+      acStats.set(ac.id, st);
       if (!inMaint && al.auto_maint > 0 && ac.condition < al.auto_maint) {
         al.parts.maint += maintenanceCost(t, ac.condition);
+        st.cost += maintenanceCost(t, ac.condition);
         startMaint.run(day + RULES.maintenanceDays - 1, ac.id);
         al.condSum += 100;
         al.condN++;
@@ -589,6 +595,7 @@ export function runTick(db, rng = Math.random, { seasonDays } = {}) {
       if (ac.condition < 30 && rng() < (30 - ac.condition) / 60) {
         al.breakdowns++;
         al.parts.maint += maintenanceCost(t, ac.condition) * 0.2;
+        st.cost += maintenanceCost(t, ac.condition) * 0.2;
         continue;
       }
       const s = seatMap(t, ac.seats_j, ac.seats_f);
@@ -602,6 +609,8 @@ export function runTick(db, rng = Math.random, { seasonDays } = {}) {
         r.parts.staff += 2 * n * staff;
         r.parts.fees += 2 * n * c.fees;
         r.cost += 2 * n * (c.fuel + tech + staff + c.fees);
+        st.cost += 2 * n * (c.fuel + tech + staff + c.fees);
+        st.legs.push({ r, seats: Object.fromEntries(CLASSES.map((k) => [k, s[k] * n])) });
         trips += n;
       }
       updAc.run(Math.max(0, ac.condition - dailyWear(trips)), ac.id);
@@ -659,6 +668,24 @@ export function runTick(db, rng = Math.random, { seasonDays } = {}) {
       al.parts.service += (r.pax.y + 3 * (r.pax.j + r.pax.f)) * RULES.serviceLevels[al.service - 1].costPerPax;
       al.pax += pax - r.transfer / 2; // pasażer z przesiadką leci dwoma odcinkami, liczymy go raz
       al.seats += seats;
+    }
+
+    const updAcStats = db.prepare('UPDATE aircraft SET last_revenue = ?, last_cost = ?, last_pax = ?, total_profit = total_profit + ? WHERE id = ?');
+    for (const [id, st] of acStats) {
+      const { al } = st;
+      const perPax = RULES.serviceLevels[al.service - 1].costPerPax;
+      let rev = 0, pax = 0, cost = st.cost;
+      for (const { r, seats } of st.legs) {
+        for (const c of CLASSES) {
+          if (!r.seats[c]) continue;
+          const share = seats[c] / r.seats[c];
+          rev += r.rev[c] * share;
+          pax += r.pax[c] * share;
+          cost += r.pax[c] * share * perPax * (c === 'y' ? 1 : 3);
+        }
+      }
+      if (al.loyalty) cost += rev * RULES.loyaltyCostShare;
+      updAcStats.run(Math.round(rev), Math.round(cost), Math.round(pax), rev - cost, id);
     }
 
     const updAirline = db.prepare('UPDATE airlines SET cash = ?, reputation = ?, total_pax = total_pax + ? WHERE id = ?');

@@ -226,6 +226,11 @@ test('jeden samolot na kilku trasach', async () => {
   const parts = Object.entries(d.detail).filter(([k]) => !k.startsWith('rev_') && k !== 'seats').reduce((s, [, v]) => s + v, 0);
   assert.ok(Math.abs(parts - d.costs) < 10);
   assert.equal(fin.routes.find((r) => r.id === prg).planes, 1);
+  // Wynik samolotu: jedyny samolot linii ma cały jej przychód i koszty (poza odsetkami i reklamą).
+  const plane = data.fleet[0];
+  assert.ok(Math.abs(plane.last_revenue - d.revenue) < 2, `${plane.last_revenue} vs ${d.revenue}`);
+  assert.ok(Math.abs(plane.last_cost - (d.costs - d.detail.interest - d.detail.marketing)) < 3, `${plane.last_cost} vs ${d.costs}`);
+  assert.ok(plane.last_pax > 0 && plane.total_profit < plane.last_revenue - plane.last_cost); // wcześniej stał w hangarze
   const buy = fin.entries.find((e) => e.text === 'Zakup: Airbus A320neo');
   assert.equal(buy.amount, -AIRCRAFT_TYPES.A320.price);
   // Osiągnięcia: pierwszy lot i własny samolot dają nagrody.

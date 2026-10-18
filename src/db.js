@@ -199,6 +199,11 @@ export function openDb(file) {
       PRIMARY KEY (airline_id, airport)
     );
   `);
+  // Wynik samolotu z ostatniego dnia i łączny zysk od zakupu.
+  addColumn('aircraft', 'last_revenue', 'REAL NOT NULL DEFAULT 0');
+  addColumn('aircraft', 'last_cost', 'REAL NOT NULL DEFAULT 0');
+  addColumn('aircraft', 'last_pax', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('aircraft', 'total_profit', 'REAL NOT NULL DEFAULT 0');
   // Dziennik operacji gotówkowych poza codziennym wynikiem (zakupy, sprzedaż, kredyty...).
   db.exec(`
     CREATE TABLE IF NOT EXISTS ledger (
