@@ -731,6 +731,17 @@ function airlineTab(el) {
       </div>
       <p class="muted">Barwy widać na samolotach we „Flocie”, na mapie tras i w rankingu.</p>
     </div>
+    <div class="card"><h3>Cele i osiągnięcia <span class="muted">(${state.data.achievements.length} z ${state.st.achievements.length})</span></h3>
+      <div class="goals">${state.st.achievements.map((g) => {
+        const done = state.data.achievements.find((x) => x.key === g.key);
+        const [cur, need] = state.data.goals.find((x) => x.key === g.key).progress;
+        const p = Math.max(0, Math.min(1, cur / need));
+        const fmt = (v) => (/^(value|profit)/.test(g.key) ? usd(v) : Math.round(v).toLocaleString('pl-PL'));
+        return `<div class="goal ${done ? 'done' : ''}"><b>${done ? '🏆' : '🎯'} ${esc(g.name)}</b><div class="muted">${esc(g.desc)}</div>
+          ${done ? `<div class="pos">Zdobyte ${gameDate(done.day)} · +${usd(g.reward)}</div>`
+            : `<div class="bar"><span style="width:${(p * 100).toFixed(0)}%"></span></div><div class="muted">${need > 1 ? `${fmt(Math.max(0, Math.min(cur, need)))} / ${fmt(need)} · ` : ''}nagroda ${usd(g.reward)}</div>`}</div>`;
+      }).join('')}</div>
+    </div>
     <div class="card"><h3>Personel i obsługa pokładowa</h3>
       <div class="row">
         <label>Pensje personelu: <b id="wage-val">${airline.wage}%</b> normy

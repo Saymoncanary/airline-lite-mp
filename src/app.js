@@ -4,7 +4,7 @@ import { join, normalize, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AIRPORTS, AIRCRAFT_TYPES } from './data.js';
 import {
-  RULES, CLASSES, MONTHS, LIVERY_LOGOS, isSlotAirport, slotCapacity, slotPrice, slotUsage, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, roundTripHours, leaseDaily, aircraftValue,
+  RULES, CLASSES, MONTHS, LIVERY_LOGOS, ACHIEVEMENTS, achievementStats, isSlotAirport, slotCapacity, slotPrice, slotUsage, distanceKm, baseFare, classFare, classShare, dailyDemand, maxRoundTrips, roundTripHours, leaseDaily, aircraftValue,
   seatMap, validSeatConfig, maintenanceCost, routePrices, seasonMult, gameMonth, activeEvents,
   pairKey, tx, currentDay, addNews, companyValue,
 } from './game.js';
@@ -108,7 +108,8 @@ export function createApp({ db, clock = null, secureCookies = false }) {
 
   on('GET', '/api/me', (ctx) => ({ user: ctx.user, airline: ctx.user ? getAirline(ctx.user.id) || null : null }));
 
-  on('GET', '/api/static', () => ({ airports: Object.values(AIRPORTS), aircraftTypes: Object.values(AIRCRAFT_TYPES), rules: RULES, logos: LIVERY_LOGOS }));
+  on('GET', '/api/static', () => ({ airports: Object.values(AIRPORTS), aircraftTypes: Object.values(AIRCRAFT_TYPES), rules: RULES, logos: LIVERY_LOGOS,
+    achievements: ACHIEVEMENTS.map(({ key, name, desc, reward }) => ({ key, name, desc, reward })) }));
 
   // --- Linia lotnicza ------------------------------------------------------
   on('POST', '/api/airline', async (ctx) => {
@@ -272,7 +273,10 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       events: activeEvents(db, day).filter((e) => e.kind !== 'fuel').map((e) => ({ text: e.text, endDay: e.end_day })),
     };
     const nextDayIn = clock ? Math.max(0, clock.nextTickAt - Date.now()) : null;
-    return { day, nextDayIn, airline: { ...airline, value: companyValue(db, airline, day) }, bases, fleet, routes, stats, world, alliance: myAlliance(airline.id) };
+    const achievements = db.prepare('SELECT key, day FROM achievements WHERE airline_id = ?').all(airline.id);
+    const progress = achievementStats(db, airline, day, { profit: stats.at(-1) ? stats.at(-1).revenue - stats.at(-1).costs : 0 });
+    const goals = ACHIEVEMENTS.map((g) => ({ key: g.key, progress: g.progress(progress) }));
+    return { day, nextDayIn, airline: { ...airline, value: companyValue(db, airline, day) }, bases, fleet, routes, stats, world, alliance: myAlliance(airline.id), achievements, goals };
   });
 
   on('POST', '/api/airline/settings', async (ctx) => {

@@ -46,6 +46,69 @@ export const RULES = {
   hubFreeSlots: 10, // darmowe sloty dla nowej linii z bazą na takim lotnisku
 };
 
+// Kontynent lotniska (Rosję liczymy do Europy).
+const REGION_CONTINENT = {
+  'Turcja, Kaukaz': 'Azja', 'Rosja i Azja Centralna': 'Azja', 'Bliski Wschód': 'Azja', 'Azja Południowa': 'Azja',
+  'Azja Wschodnia': 'Azja', 'Azja Południowo-Wschodnia': 'Azja', Afryka: 'Afryka', Oceania: 'Australia i Oceania',
+  'Ameryka Północna': 'Ameryka Północna', 'Karaiby i Ameryka Środkowa': 'Ameryka Północna', 'Ameryka Południowa': 'Ameryka Południowa',
+};
+export const continentOf = (code) => (AIRPORTS[code].country === 'Rosja' ? 'Europa' : REGION_CONTINENT[AIRPORTS[code].region] || 'Europa');
+
+// Cele i osiągnięcia: nagroda w gotówce przyznawana raz. progress(s) zwraca [ile jest, ile trzeba].
+const goal = (key, name, desc, reward, progress) => ({ key, name, desc, reward, progress });
+export const ACHIEVEMENTS = [
+  goal('first_route', 'Pierwszy lot', 'Przewieź pierwszych pasażerów', 1e6, (s) => [s.paxDay, 1]),
+  goal('own_plane', 'Na swoim', 'Miej własny (nie leasingowany) samolot', 2e6, (s) => [s.owned, 1]),
+  goal('pax10k', '10 tysięcy pasażerów', 'Przewieź łącznie 10 000 pasażerów', 2e6, (s) => [s.totalPax, 1e4]),
+  goal('pax100k', '100 tysięcy pasażerów', 'Przewieź łącznie 100 000 pasażerów', 5e6, (s) => [s.totalPax, 1e5]),
+  goal('pax1m', 'Milion pasażerów', 'Przewieź łącznie 1 000 000 pasażerów', 20e6, (s) => [s.totalPax, 1e6]),
+  goal('fleet10', 'Flota 10 samolotów', 'Miej 10 samolotów', 5e6, (s) => [s.fleet, 10]),
+  goal('fleet25', 'Flota 25 samolotów', 'Miej 25 samolotów', 15e6, (s) => [s.fleet, 25]),
+  goal('widebody', 'Dalekie rejsy', 'Miej samolot szerokokadłubowy', 3e6, (s) => [s.wide, 1]),
+  goal('jumbo', 'Królowa przestworzy', 'Miej Boeinga 747 albo Airbusa A380', 5e6, (s) => [s.jumbo, 1]),
+  goal('continents3', 'Trzy kontynenty', 'Lataj na trzy kontynenty', 5e6, (s) => [s.continents, 3]),
+  goal('continents6', 'Cały świat', 'Lataj na wszystkie sześć kontynentów', 20e6, (s) => [s.continents, 6]),
+  goal('bases5', 'Sieć baz', 'Miej 5 baz', 5e6, (s) => [s.bases, 5]),
+  goal('alliance', 'Razem raźniej', 'Dołącz do sojuszu', 1e6, (s) => [s.alliance, 1]),
+  goal('transfer500', 'Węzeł przesiadkowy', 'Obsłuż 500 pasażerów z przesiadką jednego dnia', 5e6, (s) => [s.transfer, 500]),
+  goal('profit1m', 'Milion dziennie', 'Zarób $1 mln na czysto w jeden dzień', 5e6, (s) => [s.profit, 1e6]),
+  goal('rep80', 'Ulubiona linia', 'Zdobądź reputację 80', 5e6, (s) => [s.reputation, 80]),
+  goal('value500m', 'Pół miliarda', 'Osiągnij wartość firmy $500 mln', 10e6, (s) => [s.value, 5e8]),
+  goal('value1b', 'Miliarder', 'Osiągnij wartość firmy $1 mld', 25e6, (s) => [s.value, 1e9]),
+];
+
+// Liczby, z których liczone są postępy celów danej linii.
+export function achievementStats(db, al, day, last = {}) {
+  const fleet = db.prepare('SELECT type_id, leased FROM aircraft WHERE airline_id = ? AND delivery_day <= ?').all(al.id, day);
+  const routes = db.prepare('SELECT origin, dest, last_pax, last_detail FROM routes WHERE airline_id = ?').all(al.id);
+  const continents = new Set(routes.filter((r) => r.last_pax > 0).flatMap((r) => [continentOf(r.origin), continentOf(r.dest)]));
+  return {
+    paxDay: routes.reduce((s, r) => s + r.last_pax, 0), totalPax: al.total_pax, fleet: fleet.length,
+    owned: fleet.filter((a) => !a.leased).length,
+    wide: fleet.filter((a) => AIRCRAFT_TYPES[a.type_id].cat === 'wide').length,
+    jumbo: fleet.filter((a) => ['B748', 'A388'].includes(a.type_id)).length,
+    continents: continents.size, bases: db.prepare('SELECT COUNT(*) AS n FROM bases WHERE airline_id = ?').get(al.id).n,
+    alliance: db.prepare('SELECT COUNT(*) AS n FROM alliance_members WHERE airline_id = ?').get(al.id).n,
+    transfer: routes.reduce((s, r) => s + (r.last_detail ? JSON.parse(r.last_detail).transfer || 0 : 0), 0) / 2,
+    profit: last.profit ?? 0, reputation: al.reputation, value: companyValue(db, al, day),
+  };
+}
+
+// Przyznaje nowe osiągnięcia (wywoływane na koniec dnia gry).
+function grantAchievements(db, al, day, last) {
+  const have = new Set(db.prepare('SELECT key FROM achievements WHERE airline_id = ?').all(al.id).map((r) => r.key));
+  const s = achievementStats(db, al, day, last);
+  for (const g of ACHIEVEMENTS) {
+    if (have.has(g.key)) continue;
+    const [cur, need] = g.progress(s);
+    if (cur < need) continue;
+    db.prepare('INSERT INTO achievements(airline_id, key, day) VALUES (?, ?, ?)').run(al.id, g.key, day);
+    db.prepare('UPDATE airlines SET cash = cash + ? WHERE id = ?').run(g.reward, al.id);
+    db.prepare('INSERT INTO ledger(airline_id, day, amount, text) VALUES (?, ?, ?, ?)').run(al.id, day, g.reward, `Nagroda za osiągnięcie: ${g.name}`);
+    db.prepare('INSERT INTO news(day, text) VALUES (?, ?)').run(day, `${al.name} zdobywa osiągnięcie „${g.name}”!`);
+  }
+}
+
 export const isSlotAirport = (code) => AIRPORTS[code].size >= RULES.slotMinSize;
 export const slotCapacity = (code) => RULES.slotCapacity[AIRPORTS[code].size];
 
@@ -517,7 +580,7 @@ export function runTick(db, rng = Math.random) {
       al.seats += seats;
     }
 
-    const updAirline = db.prepare('UPDATE airlines SET cash = ?, reputation = ? WHERE id = ?');
+    const updAirline = db.prepare('UPDATE airlines SET cash = ?, reputation = ?, total_pax = total_pax + ? WHERE id = ?');
     const insStat = db.prepare('INSERT OR REPLACE INTO daily_stats(airline_id, day, revenue, costs, pax, detail) VALUES (?, ?, ?, ?, ?, ?)');
     for (const al of airlines.values()) {
       al.parts.interest += (al.debt * RULES.loanInterestYear) / 365;
@@ -532,11 +595,15 @@ export function runTick(db, rng = Math.random) {
       if (al.strike) rep -= 1;
       rep -= 0.3 * al.breakdowns;
       rep = Math.min(100, Math.max(0, rep));
-      updAirline.run(al.cash + profit, rep, al.id);
+      updAirline.run(al.cash + profit, rep, Math.round(al.pax), al.id);
+      al.profit = profit;
       const detail = Object.fromEntries(Object.entries(al.parts).map(([k, v]) => [k, Math.round(v)]));
       insStat.run(al.id, day, al.revenue, al.costs, al.pax, JSON.stringify({ ...detail, seats: al.seats }));
     }
 
+    for (const al of airlines.values()) {
+      grantAchievements(db, db.prepare('SELECT * FROM airlines WHERE id = ?').get(al.id), day, { profit: al.profit });
+    }
     refillUsedMarket(db, day, rng);
     db.prepare('DELETE FROM events WHERE end_day < ?').run(day - 30);
     db.prepare('DELETE FROM daily_stats WHERE day < ?').run(day - 60);

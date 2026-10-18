@@ -226,8 +226,12 @@ test('jeden samolot na kilku trasach', async () => {
   const parts = Object.entries(d.detail).filter(([k]) => !k.startsWith('rev_') && k !== 'seats').reduce((s, [, v]) => s + v, 0);
   assert.ok(Math.abs(parts - d.costs) < 10);
   assert.equal(fin.routes.find((r) => r.id === prg).planes, 1);
-  assert.equal(fin.entries[0].text, 'Zakup: Airbus A320neo');
-  assert.equal(fin.entries[0].amount, -AIRCRAFT_TYPES.A320.price);
+  const buy = fin.entries.find((e) => e.text === 'Zakup: Airbus A320neo');
+  assert.equal(buy.amount, -AIRCRAFT_TYPES.A320.price);
+  // Osiągnięcia: pierwszy lot i własny samolot dają nagrody.
+  const got = (await a('GET', '/api/airline')).data.achievements.map((x) => x.key);
+  assert.ok(got.includes('first_route') && got.includes('own_plane'), got.join(','));
+  assert.ok(fin.entries.some((e) => e.text === 'Nagroda za osiągnięcie: Pierwszy lot' && e.amount === 1e6));
   // Zamknięcie trasy i zdjęcie z trasy usuwają przypisania.
   assert.equal((await a('DELETE', `/api/routes/${ber}`)).status, 200);
   assert.deepEqual((await a('GET', '/api/airline')).data.fleet[0].flights.map((f) => f.route_id), [prg]);
