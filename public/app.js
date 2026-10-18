@@ -939,7 +939,8 @@ async function mapTab(el) {
     <b>Kliknij lotnisko</b>, żeby zobaczyć jego popyt, konkurencję i Twoje połączenia.</p></div>
     <div class="card" id="ap-stats" hidden></div>`;
   // Kontury lądów są w repozytorium, więc mapa nie zależy od zewnętrznych serwerów kafelków.
-  const map = (state.map = L.map('map', { minZoom: 2, maxZoom: 7 }).setView([45, 15], 3));
+  // Mapa nie wychodzi poza jeden obraz świata (bez pustych pól po bokach i nad biegunami).
+  const map = (state.map = L.map('map', { minZoom: 2, maxZoom: 7, maxBounds: [[-60, -200], [84, 200]], maxBoundsViscosity: 1, worldCopyJump: false }).setView([45, 15], 3));
   map.attributionControl.setPrefix('').addAttribution('Natural Earth');
   const [land, all] = await Promise.all([
     state.land || fetch('/vendor/land.geojson').then((r) => r.json()),
@@ -951,8 +952,8 @@ async function mapTab(el) {
   const mine = state.data.airline.code;
   for (const r of all) {
     const a = airport(r.origin), b = airport(r.dest);
-    L.polyline([[a.lat, a.lon], [b.lat, b.lon]], { color: r.color1 || '#6b7a99', weight: r.code === mine ? 3.5 : 1.5, opacity: r.code === mine ? 0.95 : 0.6 })
-      .bindTooltip(`${r.code}: ${r.origin}–${r.dest}`).addTo(map);
+    const style = { color: r.color1 || '#6b7a99', weight: r.code === mine ? 3.5 : 1.5, opacity: r.code === mine ? 0.95 : 0.6 };
+    for (const line of greatCircle(a, b)) L.polyline(line, style).bindTooltip(`${r.code}: ${r.origin}–${r.dest}`).addTo(map);
   }
   // Bazy rysujemy na końcu, żeby były na wierzchu i łatwo było je kliknąć.
   const isBase = (ap) => state.data.bases.includes(ap.code);
@@ -961,6 +962,30 @@ async function mapTab(el) {
     L.circleMarker([ap.lat, ap.lon], { radius: base ? 6 : 1.5 + ap.size / 3, weight: 1, color: base ? '#3ecf8e' : '#93a3bf', fillOpacity: 0.8 })
       .bindTooltip(`${ap.city} (${ap.code}) · rynek ${ap.size}/10`).on('click', () => airportStats(ap.code)).addTo(map);
   }
+}
+
+// Trasa jako łuk po kole wielkim (tak latają samoloty), z długością geograficzną bez skoku na południku 180°.
+// Gdy łuk wychodzi poza mapę, dorysowujemy jego kopię po drugiej stronie.
+function greatCircle(a, b, steps = 48) {
+  const r = Math.PI / 180;
+  const [la1, lo1, la2, lo2] = [a.lat * r, a.lon * r, b.lat * r, b.lon * r];
+  const d = 2 * Math.asin(Math.sqrt(Math.sin((la2 - la1) / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin((lo2 - lo1) / 2) ** 2));
+  if (d < 1e-6) return [[[a.lat, a.lon], [b.lat, b.lon]]];
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const f = i / steps, A = Math.sin((1 - f) * d) / Math.sin(d), B = Math.sin(f * d) / Math.sin(d);
+    const x = A * Math.cos(la1) * Math.cos(lo1) + B * Math.cos(la2) * Math.cos(lo2);
+    const y = A * Math.cos(la1) * Math.sin(lo1) + B * Math.cos(la2) * Math.sin(lo2);
+    const z = A * Math.sin(la1) + B * Math.sin(la2);
+    let lon = Math.atan2(y, x) / r;
+    if (pts.length) { const prev = pts.at(-1)[1]; while (lon - prev > 180) lon -= 360; while (lon - prev < -180) lon += 360; }
+    pts.push([Math.atan2(z, Math.hypot(x, y)) / r, lon]);
+  }
+  const lons = pts.map((p) => p[1]);
+  const lines = [pts];
+  if (Math.max(...lons) > 180) lines.push(pts.map(([la, lo]) => [la, lo - 360]));
+  if (Math.min(...lons) < -180) lines.push(pts.map(([la, lo]) => [la, lo + 360]));
+  return lines;
 }
 
 async function airportStats(code) {
