@@ -228,3 +228,24 @@ test('jeden samolot na kilku trasach', async () => {
   server.closeAllConnections();
   server.close();
 });
+
+test('przesiadki przez hub', async () => {
+  const { db, server, base } = await startServer();
+  const a = client(base);
+  await a('POST', '/api/register', { username: 'hubert', password: 'haslo1234' });
+  await a('POST', '/api/airline', { name: 'Hub Air', code: 'HU', hub: 'WAW' });
+  await a('POST', '/api/aircraft', { typeId: 'A320C', mode: 'buy' });
+  await a('POST', '/api/aircraft', { typeId: 'A320C', mode: 'buy' });
+  for (let i = 0; i < 6; i++) runTick(db, calm);
+  const fleet = (await a('GET', '/api/airline')).data.fleet;
+  const ber = (await a('POST', '/api/routes', { origin: 'WAW', dest: 'BER' })).data.id;
+  const krk = (await a('POST', '/api/routes', { origin: 'WAW', dest: 'KRK' })).data.id;
+  await a('POST', `/api/aircraft/${fleet[0].id}/assign`, { routeId: ber });
+  await a('POST', `/api/aircraft/${fleet[1].id}/assign`, { routeId: krk });
+  runTick(db, calm);
+  const routes = (await a('GET', '/api/airline')).data.routes;
+  for (const r of routes) assert.ok(r.detail.transfer > 0, `${r.origin}-${r.dest} powinna mieć przesiadki`);
+  assert.equal(routes[0].detail.transfer, routes[1].detail.transfer);
+  server.closeAllConnections();
+  server.close();
+});

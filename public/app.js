@@ -292,14 +292,15 @@ function routesTab(el) {
           <td>${CLS.map(([c, n]) => `<input type="number" title="${n} (ref. $${r.refFares[c]})" value="${r.prices[c]}" min="10" data-price="${r.id}" data-cls="${c}" style="width:68px">`).join(' ')}
             <div class="muted">ref. $${r.refFares.y} / $${r.refFares.j} / $${r.refFares.f}</div></td>
           <td>${assigned(r.id).length}</td>
-          <td>${r.last_pax.toLocaleString('pl-PL')}</td>
+          <td>${r.last_pax.toLocaleString('pl-PL')}${r.detail?.transfer ? `<div class="muted">w tym ${r.detail.transfer} z przesiadką</div>` : ''}</td>
           <td>${r.detail ? CLS.map(([c]) => lf(r.detail[c])).join(' / ') : '—'}</td>
           <td>${usd(r.last_revenue)}</td>
           <td>${usd(r.last_cost)}</td>
           <td><button class="danger" data-close="${r.id}">Zamknij</button></td>
         </tr>`).join('')}
       </table></div>
-      <p class="muted">Obłożenie pokazuje „—”, gdy samoloty na trasie nie mają foteli danej klasy. Fotele ustawisz we „Flocie”.</p>` : '<p class="muted">Nie masz jeszcze tras.</p>'}
+      <p class="muted">Obłożenie pokazuje „—”, gdy samoloty na trasie nie mają foteli danej klasy. Fotele ustawisz we „Flocie”.
+        Gdy latasz z jednego lotniska do dwóch miast, część pasażerów między tymi miastami poleci z przesiadką i zajmie wolne miejsca ekonomiczne.</p>` : '<p class="muted">Nie masz jeszcze tras.</p>'}
     </div>`;
 
   const showMarket = async () => {

@@ -19,6 +19,9 @@ export const RULES = {
   usedMarketSize: 12, // ile ofert używanych samolotów wystawia broker
   allianceMaxMembers: 8,
   codeshareBonus: 1.15, // atrakcyjność trasy, gdy partner z sojuszu ma bazę na jej końcu
+  connectShare: 0.35, // jaka część popytu bez lotu bezpośredniego wybierze przesiadkę
+  connectDiscount: 0.8, // bilet z przesiadką kosztuje tyle co suma obu odcinków razy ta liczba
+  connectMaxDetour: 1.5, // przesiadka ma sens, gdy trasa przez hub jest najwyżej o 50% dłuższa
 };
 
 export const CLASSES = ['y', 'j', 'f'];
@@ -201,6 +204,56 @@ export function allocateMarket(demand, base, offers) {
   return pax;
 }
 
+// Pasażerowie z przesiadką: gdy linia lata A–hub i hub–B, część ludzi chcących lecieć A–B
+// (bez lotu bezpośredniego) kupi bilet z przesiadką i zajmie wolne miejsca ekonomiczne na obu odcinkach.
+function connectPassengers(routes, airlines, directMarkets, season, events) {
+  const byAirline = new Map();
+  for (const r of routes.values()) {
+    if (!byAirline.has(r.airline_id)) byAirline.set(r.airline_id, []);
+    byAirline.get(r.airline_id).push(r);
+  }
+  const options = [];
+  for (const [airlineId, list] of byAirline) {
+    const byAirport = new Map();
+    for (const r of list) for (const ap of [r.origin, r.dest]) {
+      if (!byAirport.has(ap)) byAirport.set(ap, []);
+      byAirport.get(ap).push(r);
+    }
+    const seen = new Set();
+    for (const [hub, rs] of byAirport) {
+      for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
+        const a = rs[i].origin === hub ? rs[i].dest : rs[i].origin, b = rs[j].origin === hub ? rs[j].dest : rs[j].origin;
+        const key = pairKey(a, b);
+        if (a === b || seen.has(key)) continue;
+        const dist = distanceKm(a, b), via = rs[i].dist + rs[j].dist;
+        if (dist < 300 || via > dist * RULES.connectMaxDetour) continue;
+        seen.add(key);
+        options.push({ airlineId, key, a, b, dist, via, legs: [rs[i], rs[j]] });
+      }
+    }
+  }
+  const sellers = new Map(); // ile linii oferuje przesiadkę na tej parze miast
+  for (const o of options) sellers.set(o.key, (sellers.get(o.key) || 0) + 1);
+  for (const o of options) {
+    const free = Math.min(...o.legs.map((r) => 2 * r.seats.y - r.pax.y));
+    if (free < 1) continue;
+    let demand = 2 * dailyDemand(o.a, o.b) * classShare('y', o.dist) * season * eventMult(events, o.a, o.b) * RULES.connectShare;
+    if (directMarkets.has(o.key)) demand *= 0.3; // większość wybierze lot bezpośredni
+    demand /= sellers.get(o.key);
+    const price = (o.legs[0].prices.y + o.legs[1].prices.y) * RULES.connectDiscount;
+    const al = airlines.get(o.airlineId);
+    const pax = Math.floor(allocateMarket(demand, classFare('y', o.dist), [{ seats: free, price, reputation: al.reputation }])[0]);
+    if (pax < 1) continue;
+    for (const r of o.legs) {
+      const rev = pax * price * (r.dist / o.via);
+      r.pax.y += pax;
+      r.rev.y += rev;
+      r.revenue += rev;
+      r.transfer += pax;
+    }
+  }
+}
+
 // --- Wydarzenia losowe ------------------------------------------------------
 const pick = (arr, rng) => arr[Math.floor(rng() * arr.length)];
 const between = (lo, hi, rng) => Math.round(lo + rng() * (hi - lo));
@@ -282,7 +335,7 @@ export function runTick(db, rng = Math.random) {
     const routes = new Map(
       db.prepare('SELECT * FROM routes').all().map((r) => [r.id, {
         ...r, dist: distanceKm(r.origin, r.dest), prices: routePrices(r),
-        seats: { y: 0, j: 0, f: 0 }, cost: 0, pax: { y: 0, j: 0, f: 0 }, revenue: 0, rev: { y: 0, j: 0, f: 0 }, parts: { fuel: 0, ops: 0, fees: 0 },
+        seats: { y: 0, j: 0, f: 0 }, cost: 0, pax: { y: 0, j: 0, f: 0 }, revenue: 0, rev: { y: 0, j: 0, f: 0 }, parts: { fuel: 0, ops: 0, fees: 0 }, transfer: 0,
       }])
     );
 
@@ -365,17 +418,19 @@ export function runTick(db, rng = Math.random) {
       }
     }
 
+    connectPassengers(routes, airlines, new Set(markets.keys()), season, events);
+
     const updRoute = db.prepare('UPDATE routes SET last_pax = ?, last_seats = ?, last_revenue = ?, last_cost = ?, last_detail = ? WHERE id = ?');
     for (const r of routes.values()) {
       const pax = r.pax.y + r.pax.j + r.pax.f;
       const seats = Math.round(2 * (r.seats.y + r.seats.j + r.seats.f));
-      const detail = Object.fromEntries(CLASSES.map((c) => [c, { pax: r.pax[c], seats: Math.round(2 * r.seats[c]) }]));
+      const detail = { ...Object.fromEntries(CLASSES.map((c) => [c, { pax: r.pax[c], seats: Math.round(2 * r.seats[c]) }])), transfer: r.transfer };
       updRoute.run(pax, seats, r.revenue, r.cost, JSON.stringify(detail), r.id);
       const al = airlines.get(r.airline_id);
       al.revenue += r.revenue;
       for (const c of CLASSES) al.parts['rev_' + c] += r.rev[c];
       for (const k of ['fuel', 'ops', 'fees']) al.parts[k] += r.parts[k];
-      al.pax += pax;
+      al.pax += pax - r.transfer / 2; // pasażer z przesiadką leci dwoma odcinkami, liczymy go raz
       al.seats += seats;
     }
 
