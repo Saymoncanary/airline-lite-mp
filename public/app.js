@@ -246,7 +246,7 @@ function renderMain() {
   if (state.map) { state.map.remove(); state.map = null; }
   clearInterval(state.chatTimer);
   state.dirty = false;
-  view().innerHTML = `<nav class="tabs">${TABS.map(([id, label]) => `<button data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div id="tab"></div>`;
+  view().innerHTML = `<nav class="tabs maintabs">${TABS.map(([id, label]) => `<button data-tab="${id}" class="${state.tab === id ? 'active' : ''}">${label}</button>`).join('')}</nav><div id="tab"></div>`;
   view().querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; renderMain(); }));
   // Zmiana w formularzu, której gracz jeszcze nie zatwierdził, wstrzymuje automatyczne przerysowanie.
   for (const ev of ['input', 'change']) $('#tab').addEventListener(ev, () => (state.dirty = true));
@@ -1114,5 +1114,8 @@ async function airportStats(code) {
   }));
   box.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+
+// Przypięte menu: zakładki przyklejają się tuż pod górnym paskiem, którego wysokość zależy od szerokości okna.
+new ResizeObserver(([e]) => document.documentElement.style.setProperty('--topbar-h', `${e.target.offsetHeight}px`)).observe($('.topbar'));
 
 boot().catch((e) => toast(e.message, true));

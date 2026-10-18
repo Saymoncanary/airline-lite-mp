@@ -11,9 +11,10 @@
   --warn: #f2b84b;
 }
 * { box-sizing: border-box; }
+html { scroll-padding-top: calc(var(--topbar-h, 0px) + 60px); }
 body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 a { color: var(--accent); }
-.topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.topbar { position: sticky; top: 0; z-index: 1100; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .brand { font-weight: 700; font-size: 18px; letter-spacing: .3px; }
 #topinfo { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 14px; }
 #topinfo b { color: var(--text); }
@@ -22,6 +23,7 @@ main { max-width: 1800px; margin: 0 auto; padding: 16px; }
 .card h2, .card h3 { margin: 0 0 12px; }
 .auth { max-width: 380px; margin: 40px auto; }
 .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 16px; }
+.maintabs { position: sticky; top: var(--topbar-h, 0px); z-index: 1050; margin: -16px -16px 16px; padding: 10px 16px; background: var(--bg); border-bottom: 1px solid var(--line); }
 .tabs button { background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
 .tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .tabs button.active .muted { color: #dbeeff; }
