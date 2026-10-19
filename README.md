@@ -102,3 +102,17 @@ wyłącznie z parametrami, dane graczy escapowane w interfejsie.
 Gra to jeden proces Node z plikiem bazy, więc działa na każdym serwerze z Node 22
 (VPS, Railway, Render, Fly.io). Plik `DB_FILE` musi leżeć na trwałym dysku, a przed
 serwerem warto postawić HTTPS i ustawić `COOKIE_SECURE=1`.
+
+### Railway (krok po kroku)
+
+Repozytorium ma gotowy `Dockerfile` i `railway.json`, więc Railway zbuduje grę bez dodatkowej konfiguracji.
+
+1. Wejdź na [railway.com](https://railway.com) i zaloguj się przez GitHuba.
+2. **New Project → Deploy from GitHub repo** i wybierz to repozytorium (przy pierwszym razie Railway poprosi o dostęp do repozytoriów).
+3. Dodaj trwały dysk: kliknij prawym przyciskiem na pustym miejscu w projekcie → **Volume**, podepnij go do usługi gry
+   i ustaw **Mount path** na `/data`. Bez tego baza znika przy każdej aktualizacji.
+4. W usłudze gry: **Settings → Networking → Generate Domain**. Dostaniesz adres typu `https://…up.railway.app`.
+5. Opcjonalnie w **Variables** ustaw `TICK_SECONDS` (długość dnia gry), `BOTS`, `SEASON_DAYS`.
+
+Każdy `git push` na gałąź `main` automatycznie wgrywa nową wersję. Gra musi działać w jednej kopii (SQLite),
+co ustawia `railway.json`.

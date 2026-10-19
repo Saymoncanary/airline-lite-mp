@@ -1,0 +1,6 @@
+.git
+.devcontainer
+data
+node_modules
+test
+*.md

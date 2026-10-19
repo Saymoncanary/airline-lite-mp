@@ -39,7 +39,7 @@ async function readJson(req) {
   try { return body ? JSON.parse(body) : {}; } catch { fail(400, 'Niepoprawny JSON'); }
 }
 
-export function createApp({ db, clock = null, secureCookies = false }) {
+export function createApp({ db, clock = null, secureCookies = false, trustProxy = false }) {
   const routes = [];
   const on = (method, pattern, handler) => {
     const keys = [];
@@ -974,7 +974,8 @@ export function createApp({ db, clock = null, secureCookies = false }) {
       const token = parseCookies(req.headers.cookie).sid;
       const ctx = {
         req, res, token, query: url.searchParams,
-        ip: req.socket.remoteAddress,
+        // Za serwerem pośredniczącym (np. Railway) prawdziwy adres gracza dopisuje ostatni serwer w X-Forwarded-For.
+        ip: (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',').pop().trim()) || req.socket.remoteAddress,
         user: userFromToken(db, token),
         params: Object.fromEntries(route.keys.map((k, i) => [k, safeDecode(url.pathname.match(route.re)[i + 1])])),
       };

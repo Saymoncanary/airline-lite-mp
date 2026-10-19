@@ -17,9 +17,9 @@ const db = openDb(DB_FILE);
 tx(db, () => ensureBots(db, BOTS, currentDay(db)));
 // Kiedy wypadnie następny dzień gry: interfejs pokazuje graczom odliczanie.
 const clock = { tickSeconds: TICK_SECONDS, nextTickAt: Date.now() + TICK_SECONDS * 1000, seasonDays: SEASON_DAYS };
-const handler = createApp({ db, clock, secureCookies: process.env.COOKIE_SECURE === '1' });
+const handler = createApp({ db, clock, secureCookies: process.env.COOKIE_SECURE === '1', trustProxy: process.env.TRUST_PROXY === '1' });
 
-setInterval(() => {
+const timer = setInterval(() => {
   clock.nextTickAt = Date.now() + TICK_SECONDS * 1000;
   try {
     tx(db, () => runBots(db, currentDay(db) + 1, Math.random));
@@ -31,6 +31,17 @@ setInterval(() => {
   }
 }, TICK_SECONDS * 1000);
 
-createServer(handler).listen(PORT, () => {
+const server = createServer(handler).listen(PORT, () => {
   console.log(`Gra działa na http://localhost:${PORT} (1 dzień gry = ${TICK_SECONDS}s)`);
 });
+
+// Hosting zatrzymuje serwer przy każdej nowej wersji: zamykamy bazę porządnie, żeby nic nie przepadło.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    clearInterval(timer);
+    server.close();
+    db.close();
+    console.log('Serwer zatrzymany, baza zapisana.');
+    process.exit(0);
+  });
+}
